@@ -1,0 +1,25 @@
+# Персональные данные абитуриентов (152-ФЗ) — НЕ коммитим
+data/input/*
+data/output/*
+data/db/*
+*.sqlite
+*.sqlite-journal
+*.xlsx
+*.csv
+# но оставляем папки и примеры
+!data/input/.gitkeep
+!data/output/.gitkeep
+!data/db/.gitkeep
+!tests/fixtures/**
+
+# Секреты
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+.DS_Store

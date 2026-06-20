@@ -1,0 +1,13 @@
+# Обработка данных и Excel
+pandas>=2.0
+openpyxl>=3.1
+# Битрикс24 REST API
+requests>=2.31
+# Нечёткое сопоставление ФИО
+rapidfuzz>=3.0
+# Конфиги
+PyYAML>=6.0
+# Секреты из .env
+python-dotenv>=1.0
+# Тесты
+pytest>=7.4
