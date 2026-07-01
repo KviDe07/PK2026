@@ -1,13 +1,16 @@
-# Обработка данных и Excel
+# Обработка данных и Excel (.xlsx)
 pandas>=2.0
 openpyxl>=3.1
+# Чтение .xls (выгрузка 1С)
+xlrd>=2.0
 # Битрикс24 REST API
 requests>=2.31
-# Нечёткое сопоставление ФИО
-rapidfuzz>=3.0
 # Конфиги
 PyYAML>=6.0
 # Секреты из .env
 python-dotenv>=1.0
+# Веб-приложение для сотрудников
+Flask>=3.0
+waitress>=3.0
 # Тесты
 pytest>=7.4

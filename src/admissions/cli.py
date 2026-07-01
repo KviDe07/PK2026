@@ -1,11 +1,11 @@
-"""Командная строка системы учёта абитуриентов.
+"""Командная строка системы учёта абитуриентов ФАКТ МФТИ.
 
 Команды:
-  initdb        — создать/проверить схему БД
-  inspect       — осмотреть выгрузку 1С или поля Битрикса (этап разведки)
-  ingest        — загрузить файл 1С (с сопоставлением и слиянием)
-  sync-bitrix   — выгрузить и загрузить данные из Битрикс24
-  report        — сформировать Excel-отчёты
+  setup-contact-fields — создать поля контакта (Уникальный код, Тип поступающего)
+  setup-deal-fields    — создать поля сделки (данные заявления из 1С)
+  setup-funnel         — скопировать стадии между воронками сделок
+  inspect              — осмотреть выгрузку 1С или поля сущности Битрикса
+  sync                 — обновить контакты и сделки в Битриксе по выгрузке 1С
 """
 
 from __future__ import annotations
@@ -17,70 +17,42 @@ from pathlib import Path
 from typing import List, Optional
 
 from .config import Config
-from .utils import setup_logging
+from .utils import setup_logging, timestamp_slug
 
 log = logging.getLogger("admissions")
 
 
-# ── inspect ────────────────────────────────────────────────────────────────────
+# ── inspect ──────────────────────────────────────────────────────────────────
 
 def _inspect_file(path: Path, cfg: Config, rows: int) -> None:
-    from .ingest_1c import read_table
+    from .ingest_applications import COLUMNS, parse_applications
 
-    sheet = cfg.mapping_1c.get("sheet")
-    df = read_table(path, sheet=sheet)
-    cols = list(df.columns)
+    cols = {**COLUMNS, **(cfg.columns_1c or {})}
+    parsed = parse_applications(path, cfg.columns_1c or None)
+    total_apps = sum(len(a["applications"]) for a in parsed.values())
+    groups = sorted({app["group"] for a in parsed.values() for app in a["applications"] if app["group"]})
 
-    print(f"\nФайл:    {path}")
-    print(f"Строк:   {len(df)}")
-    print(f"Колонок: {len(cols)}\n")
+    print(f"\nФайл:          {path}")
+    print(f"Абитуриентов:  {len(parsed)} (заявлений после дедупа: {total_apps})")
+    print(f"Конкурсные группы: {', '.join(groups) or '—'}\n")
 
-    print("── Колонки и пример значения ─────────────────────────────")
-    for c in cols:
-        sample = df[c].dropna()
-        example = str(sample.iloc[0])[:50] if len(sample) else "—"
-        print(f"  • {c!r}: {example}")
-
-    # Сверка с текущим маппингом
-    fields_map = cfg.mapping_1c.get("fields", {})
-    id_field = cfg.mapping_1c.get("id_field")
-    status_field = cfg.mapping_1c.get("status_field")
-    col_set = set(cols)
-
-    print("\n── Сверка с config/mapping_1c.yaml ───────────────────────")
-    print(f"  id_field     {id_field!r}: {'НАЙДЕНО' if id_field in col_set else 'НЕ найдено'}")
-    print(f"  status_field {status_field!r}: {'НАЙДЕНО' if status_field in col_set else 'НЕ найдено'}")
-    mapped_columns = set()
-    for canonical, column in fields_map.items():
-        ok = column in col_set
-        if ok:
-            mapped_columns.add(column)
-        mark = "✓" if ok else "✗"
-        print(f"  {mark} {canonical:14s} <- {column!r}")
-
-    unmapped = [c for c in cols if c not in mapped_columns and c not in {id_field, status_field}]
-    if unmapped:
-        print("\n── Колонки файла без маппинга ────────────────────────────")
-        for c in unmapped:
-            print(f"  ? {c!r}")
+    print("── Ожидаемые колонки (атрибут → колонка 1С) ──────────────")
+    for key, col in cols.items():
+        print(f"  {key:12s} <- {col!r}")
 
     if rows > 0:
-        print(f"\n── Первые {rows} строк ────────────────────────────────────")
-        with_opt = df.head(rows).to_string(max_colwidth=24)
-        print(with_opt)
+        print(f"\n── Первые {rows} абитуриентов ─────────────────────────────")
+        for a in list(parsed.values())[:rows]:
+            print(f"  • {a['full_name']} | код {a['code']} | тел {a['phone']} | заявлений {len(a['applications'])}")
+            for app in a["applications"]:
+                print(f"      - {app['group']} | приоритет {app['priority']} | баллы {app['score']} | согласие {app['consent']}")
     print()
-
-
-def _inspect_bitrix(cfg: Config) -> None:
-    from .ingest_bitrix import BitrixClient
-
-    client = BitrixClient.from_config(cfg)
-    client.print_inspection()
 
 
 def cmd_inspect(args: argparse.Namespace, cfg: Config) -> int:
     if args.bitrix:
-        _inspect_bitrix(cfg)
+        from .bitrix_client import BitrixClient
+        BitrixClient.from_config(cfg).print_inspection(args.entity)
         return 0
     if not args.file:
         log.error("Укажите файл для осмотра или флаг --bitrix")
@@ -89,98 +61,115 @@ def cmd_inspect(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
-# ── initdb ─────────────────────────────────────────────────────────────────────
+# ── setup-*-fields ────────────────────────────────────────────────────────────
 
-def cmd_initdb(args: argparse.Namespace, cfg: Config) -> int:
-    from .db import Database
+def _print_fields_plan(title: str, plan, codes, apply: bool) -> None:
+    header = "СОЗДАНИЕ" if apply else "предпросмотр — изменений нет"
+    print(f"\n{title} ({header})\n")
+    for action, d, name in plan:
+        mark = "[есть]    " if action == "exists" else "[создать] "
+        print(f"  {mark} {d['label']:32s} | {d['type']:11s} | {name or d['name']}")
+    if apply and codes:
+        print("\nФактические коды полей (XML_ID -> код):")
+        for xml, code in codes.items():
+            print(f"  {xml:12s} -> {code}")
+    elif not apply:
+        print("\nСоздать поля: повтори команду с флагом --apply")
 
-    db = Database(cfg.db_path)
-    db.close()
-    log.info("Схема БД готова: %s", cfg.db_path)
+
+def cmd_setup_contact_fields(args: argparse.Namespace, cfg: Config) -> int:
+    from .bitrix_fields import setup_contact_fields
+    plan, codes = setup_contact_fields(cfg, apply=args.apply)
+    _print_fields_plan("Поля контакта", plan, codes, args.apply)
     return 0
 
 
-# ── ingest (1С) ────────────────────────────────────────────────────────────────
+def cmd_setup_deal_fields(args: argparse.Namespace, cfg: Config) -> int:
+    from .bitrix_fields import setup_deal_fields
+    plan, codes = setup_deal_fields(cfg, apply=args.apply)
+    _print_fields_plan("Поля сделки", plan, codes, args.apply)
+    return 0
 
-def cmd_ingest(args: argparse.Namespace, cfg: Config) -> int:
-    from .db import Database
-    from .ingest_1c import ingest_file
-    from .merge import process_records
 
-    path = Path(args.file)
-    if not path.exists():
-        log.error("Файл не найден: %s", path)
+# ── setup-funnel ──────────────────────────────────────────────────────────────
+
+def cmd_setup_funnel(args: argparse.Namespace, cfg: Config) -> int:
+    from .bitrix_funnel import copy_funnel_stages
+
+    plan, _ = copy_funnel_stages(cfg, args.from_category, args.to_category, apply=args.apply)
+    mark = {"add": "[ДОБАВИТЬ] ", "update": "[ПЕРЕИМЕН.]", "keep": "[ = ]      "}
+    sem = {"S": "успех", "F": "провал"}
+    header = "ПРИМЕНЕНО" if args.apply else "предпросмотр — изменений нет"
+    print(f"\nВоронка [{args.from_category}] → [{args.to_category}]  ({header})\n")
+    for p in plan:
+        print(f"  {mark.get(p.action, p.action)} {p.status_id:22s} | "
+              f"{(sem.get(p.semantics) or 'в работе'):8s} | {p.name}")
+    adds = sum(1 for p in plan if p.action == "add")
+    upds = sum(1 for p in plan if p.action == "update")
+    keeps = sum(1 for p in plan if p.action == "keep")
+    print(f"\nИтого: добавить={adds}, переименовать={upds}, без изменений={keeps}")
+    if not args.apply:
+        print("Применить: повтори команду с флагом --apply")
+    return 0
+
+
+# ── sync ──────────────────────────────────────────────────────────────────────
+
+def _latest_file(directory: Path, suffixes: tuple) -> Optional[Path]:
+    files = [p for p in directory.glob("*") if p.suffix.lower() in suffixes]
+    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+
+def cmd_sync(args: argparse.Namespace, cfg: Config) -> int:
+    from .sync import sync
+    from .report import write_problem_report
+
+    apps = Path(args.applications) if args.applications else _latest_file(cfg.input_dir, (".xls", ".xlsx"))
+    if not apps or not apps.exists():
+        log.error("Не найден файл выгрузки 1С (укажите --applications или положите .xls/.xlsx в %s)",
+                  cfg.input_dir)
         return 2
+    log.info("Выгрузка 1С: %s", apps.name)
 
-    records, file_hash = ingest_file(path, cfg, sheet=args.sheet)
-    log.info("Прочитано записей из 1С: %d", len(records))
-
-    db = Database(cfg.db_path)
-    try:
-        if not args.force and db.hash_already_ingested("1c", file_hash):
-            log.warning("Этот файл уже загружался (hash совпал). Используйте --force для повтора.")
-            return 0
-        stats = process_records(
-            db, cfg, records, source="1c",
-            file_name=path.name, file_hash=file_hash, dry_run=args.dry_run,
-        )
-        _print_stats(stats, args.dry_run)
-    finally:
-        db.close()
-    return 0
-
-
-# ── sync-bitrix ────────────────────────────────────────────────────────────────
-
-def cmd_sync_bitrix(args: argparse.Namespace, cfg: Config) -> int:
-    from .db import Database
-    from .ingest_bitrix import fetch_records
-    from .merge import process_records
-
-    records = fetch_records(cfg, from_file=args.from_file)
-    log.info("Получено записей из Битрикс24: %d", len(records))
-
-    db = Database(cfg.db_path)
-    try:
-        stats = process_records(
-            db, cfg, records, source="bitrix",
-            file_name=None, file_hash=None, dry_run=args.dry_run,
-        )
-        _print_stats(stats, args.dry_run)
-    finally:
-        db.close()
-    return 0
-
-
-# ── report ─────────────────────────────────────────────────────────────────────
-
-def cmd_report(args: argparse.Namespace, cfg: Config) -> int:
-    from .db import Database
-    from .reports import build_reports
-
-    db = Database(cfg.db_path)
-    try:
-        out_path = build_reports(db, cfg, kinds=args.type, out_file=args.out)
-    finally:
-        db.close()
-    log.info("Отчёт сохранён: %s", out_path)
-    return 0
-
-
-# ── вспомогательное ──────────────────────────────────────────────────────────────
-
-def _print_stats(stats: dict, dry_run: bool) -> None:
-    prefix = "[DRY-RUN] " if dry_run else ""
+    stats = sync(cfg, str(apps), apply=args.apply)
+    header = "ПРИМЕНЕНО" if args.apply else "DRY-RUN — без записи"
     log.info(
-        "%sИтог: всего=%d, новых=%d, обновлено=%d, смен статуса=%d, в review=%d",
-        prefix,
-        stats.get("total", 0),
-        stats.get("new", 0),
-        stats.get("updated", 0),
-        stats.get("status_changes", 0),
-        stats.get("review", 0),
+        "%s | абитуриентов: %d | заявлений: %d | по коду: %d | приняты заготовки: %d | "
+        "создать контактов: %d | сделок: создать %d, заполнить пустых %d, обновить %d",
+        header, stats["applicants"], stats["applications"], stats["matched_by_code"],
+        stats["adopted"], stats["created_contacts"], stats["created_deals"],
+        stats["filled_deals"], stats["updated_deals"],
+    )
+    log.info(
+        "Разбор: тёзки %d | конфликт ФИО %d | не создались %d | выбывшие %d | "
+        "отозвано заявлений %d (перенесено %d) | дубли кода %d | дубли сделок %d",
+        len(stats["ambiguous"]), len(stats["conflicts"]), len(stats["failed"]),
+        len(stats["dropped"]), len(stats["withdrawn"]), stats["withdrawn_moved"],
+        len(stats["code_dups"]), len(stats["deal_dups"]),
     )
 
+    # Excel-отчёт «разбор сопоставления»
+    report_path = cfg.output_dir / f"sync_razbor_{timestamp_slug()}.xlsx"
+    write_problem_report(report_path, stats)
+    log.info("Отчёт-разбор: %s", report_path)
+
+    if not args.apply:
+        print("\nПрименить изменения: повтори команду с флагом --apply")
+    return 0
+
+
+# ── export (сделки воронки -> Excel) ──────────────────────────────────────────
+
+def cmd_export(args: argparse.Namespace, cfg: Config) -> int:
+    from .export import export_deals
+
+    out = Path(args.out) if args.out else cfg.output_dir / f"deals_export_{timestamp_slug()}.xlsx"
+    path = export_deals(cfg, out)
+    log.info("Выгрузка сделок сохранена: %s", path)
+    return 0
+
+
+# ── парсер ────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="admissions", description="Учёт абитуриентов ФАКТ МФТИ")
@@ -188,35 +177,35 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config-dir", help="каталог с конфигами (по умолчанию ./config)")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sp = sub.add_parser("initdb", help="создать/проверить схему БД")
-    sp.set_defaults(func=cmd_initdb)
-
-    sp = sub.add_parser("inspect", help="осмотреть выгрузку 1С или поля Битрикса")
-    sp.add_argument("file", nargs="?", help="путь к файлу 1С (.xlsx/.csv)")
+    sp = sub.add_parser("inspect", help="осмотреть выгрузку 1С или поля сущности Битрикса")
+    sp.add_argument("file", nargs="?", help="путь к файлу 1С (.xls/.xlsx)")
     sp.add_argument("--bitrix", action="store_true", help="осмотреть поля сущности Битрикса")
-    sp.add_argument("--rows", type=int, default=5, help="сколько строк показать (0 — не показывать)")
+    sp.add_argument("--entity", default="deal", help="сущность для --bitrix (deal/contact)")
+    sp.add_argument("--rows", type=int, default=5, help="сколько абитуриентов показать (0 — не показывать)")
     sp.set_defaults(func=cmd_inspect)
 
-    sp = sub.add_parser("ingest", help="загрузить файл 1С")
-    sp.add_argument("--file", required=True, help="путь к файлу 1С (.xlsx/.csv)")
-    sp.add_argument("--sheet", help="имя листа Excel (по умолчанию из конфига)")
-    sp.add_argument("--dry-run", action="store_true", help="показать изменения, не записывая")
-    sp.add_argument("--force", action="store_true", help="игнорировать проверку повторной загрузки")
-    sp.set_defaults(func=cmd_ingest)
+    sp = sub.add_parser("setup-contact-fields", help="создать поля контакта (код, тип)")
+    sp.add_argument("--apply", action="store_true", help="создать поля (без флага — предпросмотр)")
+    sp.set_defaults(func=cmd_setup_contact_fields)
 
-    sp = sub.add_parser("sync-bitrix", help="выгрузить данные из Битрикс24")
-    sp.add_argument("--dry-run", action="store_true", help="показать изменения, не записывая")
-    sp.add_argument("--from-file", help="взять записи из локального JSON вместо API (офлайн)")
-    sp.set_defaults(func=cmd_sync_bitrix)
+    sp = sub.add_parser("setup-deal-fields", help="создать поля сделки (данные заявления)")
+    sp.add_argument("--apply", action="store_true", help="создать поля (без флага — предпросмотр)")
+    sp.set_defaults(func=cmd_setup_deal_fields)
 
-    sp = sub.add_parser("report", help="сформировать Excel-отчёты")
-    sp.add_argument(
-        "--type", nargs="+",
-        choices=["master", "changes", "analytics", "review", "all"],
-        default=["all"], help="какие листы включить",
-    )
+    sp = sub.add_parser("setup-funnel", help="скопировать стадии между воронками сделок")
+    sp.add_argument("--from", dest="from_category", type=int, required=True, help="ID воронки-источника")
+    sp.add_argument("--to", dest="to_category", type=int, required=True, help="ID целевой воронки")
+    sp.add_argument("--apply", action="store_true", help="применить (без флага — предпросмотр)")
+    sp.set_defaults(func=cmd_setup_funnel)
+
+    sp = sub.add_parser("sync", help="обновить контакты и сделки в Битриксе по выгрузке 1С")
+    sp.add_argument("--applications", help="файл выгрузки 1С (по умолчанию свежий .xls/.xlsx из data/input)")
+    sp.add_argument("--apply", action="store_true", help="записать изменения (без флага — только показать)")
+    sp.set_defaults(func=cmd_sync)
+
+    sp = sub.add_parser("export", help="выгрузить сделки воронки в Excel (с комментариями)")
     sp.add_argument("--out", help="путь к выходному .xlsx (по умолчанию в data/output)")
-    sp.set_defaults(func=cmd_report)
+    sp.set_defaults(func=cmd_export)
 
     return p
 

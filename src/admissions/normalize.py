@@ -60,6 +60,44 @@ def full_name_key(last: Any, first: Any, middle: Any) -> Optional[str]:
     return joined or None
 
 
+def parse_full_name(value: Any) -> tuple:
+    """Разбить «ФИО» одним полем на (фамилия, имя, отчество).
+
+    Первое слово — фамилия, второе — имя, остаток — отчество (может включать
+    несколько слов). Недостающие части возвращаются как None.
+    """
+    text = normalize_name(value)
+    if not text:
+        return (None, None, None)
+    parts = text.split(" ")
+    last = parts[0] if len(parts) > 0 else None
+    first = parts[1] if len(parts) > 1 else None
+    middle = " ".join(parts[2:]) if len(parts) > 2 else None
+    return (last, first, middle)
+
+
+def lastfirst_key(value: Any) -> Optional[str]:
+    """Ключ сопоставления по Фамилии+Имени (оператор вводит только их)."""
+    last, first, _ = parse_full_name(value)
+    return full_name_key(last, first, None)
+
+
+# ── галочки конкурсных выгрузок («✓» / пусто) ─────────────────────────────────
+
+def normalize_checkmark(value: Any) -> str:
+    """Галочную колонку 1С («✓», «Да», пусто) привести к «Да»/«» (пусто)."""
+    text = clean_str(value)
+    if text is None:
+        return ""
+    low = text.lower()
+    if text == "✓" or low in _TRUE:
+        return "Да"
+    if low in _FALSE:
+        return ""
+    # любое непустое осмысленное значение считаем галочкой
+    return "Да"
+
+
 # ── email / телефон ─────────────────────────────────────────────────────────
 
 def normalize_email(value: Any) -> Optional[str]:

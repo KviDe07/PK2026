@@ -10,10 +10,12 @@ requires-python = ">=3.9"
 dependencies = [
     "pandas>=2.0",
     "openpyxl>=3.1",
+    "xlrd>=2.0",
     "requests>=2.31",
-    "rapidfuzz>=3.0",
     "PyYAML>=6.0",
     "python-dotenv>=1.0",
+    "Flask>=3.0",
+    "waitress>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +23,7 @@ dev = ["pytest>=7.4"]
 
 [project.scripts]
 admissions = "admissions.cli:main"
+admissions-web = "admissions.webapp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
