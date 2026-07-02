@@ -8,6 +8,13 @@ import pytest
 from admissions import webapp
 
 
+@pytest.fixture(autouse=True)
+def _clear_auth_env(monkeypatch):
+    # тесты не должны зависеть от локального .env (APP_PASSWORD и т.п.)
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    monkeypatch.delenv("APP_USERNAME", raising=False)
+
+
 @pytest.fixture
 def client():
     webapp.app.config.update(TESTING=True)
@@ -22,6 +29,26 @@ def _stats(**over):
             "code_dups": [], "deal_dups": []}
     base.update(over)
     return base
+
+
+def test_prefix_middleware_strips_prefix():
+    from admissions.webapp import _PrefixMiddleware
+    seen = {}
+
+    def dummy(environ, start_response):
+        seen["script"] = environ.get("SCRIPT_NAME")
+        seen["path"] = environ.get("PATH_INFO")
+        return []
+
+    mw = _PrefixMiddleware(dummy, "pk2026")
+    mw({"PATH_INFO": "/pk2026/preview", "SCRIPT_NAME": ""}, lambda *a: None)
+    assert seen == {"script": "/pk2026", "path": "/preview"}
+    # ровно префикс без хвоста -> корень
+    mw({"PATH_INFO": "/pk2026", "SCRIPT_NAME": ""}, lambda *a: None)
+    assert seen == {"script": "/pk2026", "path": "/"}
+    # чужой путь не трогаем
+    mw({"PATH_INFO": "/other", "SCRIPT_NAME": ""}, lambda *a: None)
+    assert seen == {"script": "", "path": "/other"}
 
 
 def test_auth_open_when_no_password(client, monkeypatch):

@@ -34,6 +34,29 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 МБ на файл
 _CFG = Config.load()  # load_dotenv внутри — .env уже подхвачен
 
 
+# ── работа под под-путём (например fakt.mipt.ru/pk2026) ───────────────────────
+# nginx проксирует /pk2026 → контейнер, передавая полный путь. Middleware
+# переносит префикс из PATH_INFO в SCRIPT_NAME, тогда роуты совпадают, а url_for
+# генерирует ссылки уже с префиксом. Префикс задаётся переменной APP_URL_PREFIX.
+
+class _PrefixMiddleware:
+    def __init__(self, wsgi_app, prefix: str):
+        self.wsgi_app = wsgi_app
+        self.prefix = "/" + prefix.strip("/")
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path == self.prefix or path.startswith(self.prefix + "/"):
+            environ["SCRIPT_NAME"] = self.prefix + environ.get("SCRIPT_NAME", "")
+            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+        return self.wsgi_app(environ, start_response)
+
+
+_PREFIX = os.environ.get("APP_URL_PREFIX", "").strip("/")
+if _PREFIX:
+    app.wsgi_app = _PrefixMiddleware(app.wsgi_app, _PREFIX)
+
+
 # ── авторизация (HTTP Basic) ──────────────────────────────────────────────────
 # Если в .env задан APP_PASSWORD — вход обязателен. Если не задан (локальная
 # разработка) — приложение открыто. Логин по умолчанию «admin» (APP_USERNAME).
