@@ -141,6 +141,24 @@ admissions-web          # или: python -m admissions.webapp
 сервере пароль обязателен). Приложение пишет в живой Битрикс, поэтому без пароля
 публиковать его нельзя.
 
+## Деплой в Docker
+
+На сервере с Docker:
+```bash
+git clone git@github.com:KviDe07/PK2026.git && cd PK2026
+cp .env.example .env && nano .env      # BITRIX_WEBHOOK_URL + APP_PASSWORD (обязательно!)
+docker compose up -d --build           # соберёт образ и запустит
+# приложение на http://<сервер>:8000
+```
+- Реальные данные (загрузки 1С, выгрузки Excel) хранятся на хосте в `./data` (том), в образ не попадают.
+- Секреты — только через `.env` (в образ не копируются; см. `.dockerignore`).
+- Обновление версии: `git pull && docker compose up -d --build`.
+- Логи: `docker compose logs -f`.
+
+**Публичный доступ.** Порт 8000 отдаёт HTTP без шифрования. Для доступа из интернета
+поставьте перед контейнером nginx/Caddy с HTTPS (Let's Encrypt) и не забудьте `APP_PASSWORD`.
+Для внутренней сети/VPN можно и напрямую по 8000 (с паролем).
+
 ## Тесты
 
 ```bash

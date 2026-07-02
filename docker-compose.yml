@@ -1,0 +1,15 @@
+# Запуск веб-приложения приёмной комиссии в контейнере.
+#   1) скопируйте .env.example -> .env и заполните (BITRIX_WEBHOOK_URL, APP_PASSWORD)
+#   2) docker compose up -d --build
+#   3) приложение на http://<сервер>:8000
+services:
+  web:
+    build: .
+    container_name: priyomka-fakt
+    ports:
+      - "8000:8000"            # для публичного доступа — спрячьте за nginx + HTTPS
+    env_file:
+      - .env                   # BITRIX_WEBHOOK_URL, APP_USERNAME, APP_PASSWORD
+    volumes:
+      - ./data:/app/data       # загрузки 1С и выгрузки Excel хранятся на хосте
+    restart: unless-stopped
