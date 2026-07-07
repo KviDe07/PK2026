@@ -21,9 +21,13 @@ levels:
   bachelor:
     title: "Базовое высшее (бакалавриат)"
     enabled: true
+    category_id: 8
+    contact_type_id: "CLIENT"        # «Тип контакта»: Абитуриенты
   master:
     title: "Магистратура"
-    enabled: false
+    enabled: true
+    category_id: 10
+    contact_type_id: "SUPPLIER"      # «Тип контакта»: Магистры
   postgrad:
     title: "Аспирантура"
     enabled: false

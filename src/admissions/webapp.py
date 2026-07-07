@@ -143,7 +143,11 @@ INDEX = """
 <div class=card>
   <h2 style=margin-top:0>Выгрузка из Битрикса</h2>
   <p class=muted>Все сделки воронки в Excel: контакт, данные заявления, стадия, комментарии.</p>
-  <a class="btn btn-ghost" href="{{ url_for('export') }}">Выгрузить сделки в Excel</a>
+  {% for key, lv in levels.items() %}
+    {% if lv.enabled %}
+      <a class="btn btn-ghost" href="{{ url_for('export') }}?level={{ key }}">Выгрузить: {{ lv.title }}</a>
+    {% endif %}
+  {% endfor %}
 </div>
 """
 
@@ -236,7 +240,7 @@ def preview():
         abort(400, "Не выбран файл 1С")
     path = _save_upload(request.files["file"])
     try:
-        stats = sync(_CFG, str(path), apply=False)
+        stats = sync(_CFG, str(path), apply=False, level=level)
     except Exception as err:  # noqa: BLE001
         return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
     report = _write_report(stats)
@@ -266,7 +270,7 @@ def apply():
     if not fname or not path.exists():
         abort(400, "Файл не найден — загрузите заново")
     try:
-        stats = sync(_CFG, str(path), apply=True)
+        stats = sync(_CFG, str(path), apply=True, level=level)
     except Exception as err:  # noqa: BLE001
         return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
     report = _write_report(stats)
@@ -277,9 +281,11 @@ def apply():
 
 @app.get("/export")
 def export():
+    level = request.args.get("level", "bachelor")
+    _check_level(level)
     try:
-        out = _CFG.output_dir / f"deals_export_{timestamp_slug()}.xlsx"
-        export_deals(_CFG, out)
+        out = _CFG.output_dir / f"deals_export_{level}_{timestamp_slug()}.xlsx"
+        export_deals(_CFG, out, level=level)
     except Exception as err:  # noqa: BLE001
         return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
     return redirect(url_for("download", name=out.name))

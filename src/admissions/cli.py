@@ -86,8 +86,8 @@ def cmd_setup_contact_fields(args: argparse.Namespace, cfg: Config) -> int:
 
 def cmd_setup_deal_fields(args: argparse.Namespace, cfg: Config) -> int:
     from .bitrix_fields import setup_deal_fields
-    plan, codes = setup_deal_fields(cfg, apply=args.apply)
-    _print_fields_plan("Поля сделки", plan, codes, args.apply)
+    plan, codes = setup_deal_fields(cfg, apply=args.apply, level=args.level)
+    _print_fields_plan(f"Поля сделки ({args.level})", plan, codes, args.apply)
     return 0
 
 
@@ -131,14 +131,14 @@ def cmd_sync(args: argparse.Namespace, cfg: Config) -> int:
         return 2
     log.info("Выгрузка 1С: %s", apps.name)
 
-    stats = sync(cfg, str(apps), apply=args.apply)
+    stats = sync(cfg, str(apps), apply=args.apply, level=args.level)
     header = "ПРИМЕНЕНО" if args.apply else "DRY-RUN — без записи"
     log.info(
         "%s | абитуриентов: %d | заявлений: %d | по коду: %d | приняты заготовки: %d | "
-        "создать контактов: %d | сделок: создать %d, заполнить пустых %d, обновить %d",
+        "создать контактов: %d | сделок: создать %d, заполнить пустых %d, обновить %d, перепривязать %d",
         header, stats["applicants"], stats["applications"], stats["matched_by_code"],
         stats["adopted"], stats["created_contacts"], stats["created_deals"],
-        stats["filled_deals"], stats["updated_deals"],
+        stats["filled_deals"], stats["updated_deals"], stats["relinked_deals"],
     )
     log.info(
         "Разбор: тёзки %d | конфликт ФИО %d | не создались %d | выбывшие %d | "
@@ -163,8 +163,8 @@ def cmd_sync(args: argparse.Namespace, cfg: Config) -> int:
 def cmd_export(args: argparse.Namespace, cfg: Config) -> int:
     from .export import export_deals
 
-    out = Path(args.out) if args.out else cfg.output_dir / f"deals_export_{timestamp_slug()}.xlsx"
-    path = export_deals(cfg, out)
+    out = Path(args.out) if args.out else cfg.output_dir / f"deals_export_{args.level}_{timestamp_slug()}.xlsx"
+    path = export_deals(cfg, out, level=args.level)
     log.info("Выгрузка сделок сохранена: %s", path)
     return 0
 
@@ -190,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("setup-deal-fields", help="создать поля сделки (данные заявления)")
     sp.add_argument("--apply", action="store_true", help="создать поля (без флага — предпросмотр)")
+    sp.add_argument("--level", default="bachelor", help="уровень: bachelor | master")
     sp.set_defaults(func=cmd_setup_deal_fields)
 
     sp = sub.add_parser("setup-funnel", help="скопировать стадии между воронками сделок")
@@ -201,10 +202,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("sync", help="обновить контакты и сделки в Битриксе по выгрузке 1С")
     sp.add_argument("--applications", help="файл выгрузки 1С (по умолчанию свежий .xls/.xlsx из data/input)")
     sp.add_argument("--apply", action="store_true", help="записать изменения (без флага — только показать)")
+    sp.add_argument("--level", default="bachelor", help="уровень: bachelor | master")
     sp.set_defaults(func=cmd_sync)
 
     sp = sub.add_parser("export", help="выгрузить сделки воронки в Excel (с комментариями)")
     sp.add_argument("--out", help="путь к выходному .xlsx (по умолчанию в data/output)")
+    sp.add_argument("--level", default="bachelor", help="уровень: bachelor | master")
     sp.set_defaults(func=cmd_export)
 
     return p

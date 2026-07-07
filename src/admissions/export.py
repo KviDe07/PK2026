@@ -80,9 +80,9 @@ def _format(raw: list, users: Dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def export_deals(cfg, path: str | Path, client=None) -> Path:
+def export_deals(cfg, path: str | Path, client=None, level: str = "bachelor") -> Path:
     client = client or BitrixClient.from_config(cfg)
-    cat = cfg.category_id
+    cat = cfg.category_id_for(level)
 
     dcode = {x: r["FIELD_NAME"] for x, r in index_by_xml(client, "deal").items()}
     cidx = index_by_xml(client, "contact")

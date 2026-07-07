@@ -32,6 +32,17 @@ _DEAL_UF = [
         {"xml": "B_FEATURES", "name": "UF_CRM_B_FEATURES"},
         {"xml": "B_CONTROL", "name": "UF_CRM_B_CONTROL"},
         {"xml": "B_UPDATED", "name": "UF_CRM_B_UPDATED"},
+        # магистратура «М:» (нет БВИ/Целевик/особое право/контроль; Кафедра — операторская)
+        {"xml": "M_CODE", "name": "UF_CRM_M_CODE"},
+        {"xml": "M_GROUP", "name": "UF_CRM_M_GROUP"},
+        {"xml": "M_SCORE", "name": "UF_CRM_M_SCORE"},
+        {"xml": "M_PRIORITY", "name": "UF_CRM_M_PRIORITY"},
+        {"xml": "M_SCORE_ID", "name": "UF_CRM_M_SCORE_ID"},
+        {"xml": "M_BASIS", "name": "UF_CRM_M_BASIS"},
+        {"xml": "M_CONSENT", "name": "UF_CRM_M_CONSENT"},
+        {"xml": "M_FEATURES", "name": "UF_CRM_M_FEATURES"},
+        {"xml": "M_UPDATED", "name": "UF_CRM_M_UPDATED"},
+        {"xml": "M_DEPT", "name": "UF_CRM_M_DEPT"},
     ]
 ]
 _CONTACT_UF = [

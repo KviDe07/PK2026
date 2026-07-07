@@ -30,8 +30,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from .applicant import Applicant1C, build_applicants
 from .bitrix_client import BitrixClient, extract_value
 from .bitrix_fields import (
+    DEAL_FIELDS_BACHELOR,
+    DEAL_FIELDS_BY_LEVEL,
     DESIRED_CONTACT_FIELDS,
-    DESIRED_DEAL_FIELDS,
     enum_value_map,
     index_by_xml,
 )
@@ -40,20 +41,24 @@ from .utils import now_iso
 
 log = logging.getLogger("admissions")
 
-# Атрибут заявления (1С) -> XML_ID поля сделки.
-APP_TO_XML = {
-    "group": "B_GROUP",
-    "no_exams": "B_BVI",
-    "score": "B_SCORE",
-    "priority": "B_PRIORITY",
-    "score_id": "B_SCORE_ID",
-    "basis": "B_BASIS",
-    "targeted": "B_TARGETED",
-    "consent": "B_CONSENT",
-    "special": "B_SPECIAL",
-    "app_date": "B_APP_DATE",
-    "features": "B_FEATURES",
-    "control": "B_CONTROL",
+# Префикс XML_ID полей сделки по уровню (бакалавриат «B», магистратура «M»).
+LEVEL_PREFIX = {"bachelor": "B", "master": "M"}
+
+# Атрибут заявления (1С) -> XML_ID поля сделки, по уровню. У магистратуры нет
+# БВИ/Целевик/особое право/контроль (эти колонки убраны из выгрузки), «Кафедра» —
+# операторское поле (в маппинге нет: sync его не заполняет).
+APP_TO_XML_BY_LEVEL = {
+    "bachelor": {
+        "group": "B_GROUP", "no_exams": "B_BVI", "score": "B_SCORE", "priority": "B_PRIORITY",
+        "score_id": "B_SCORE_ID", "basis": "B_BASIS", "targeted": "B_TARGETED",
+        "consent": "B_CONSENT", "special": "B_SPECIAL", "app_date": "B_APP_DATE",
+        "features": "B_FEATURES", "control": "B_CONTROL",
+    },
+    "master": {
+        "group": "M_GROUP", "score": "M_SCORE", "priority": "M_PRIORITY",
+        "score_id": "M_SCORE_ID", "basis": "M_BASIS", "consent": "M_CONSENT",
+        "features": "M_FEATURES",
+    },
 }
 
 
@@ -143,10 +148,11 @@ def _require_fields(idx: Dict[str, Any], desired, entity: str) -> None:
 
 
 def _desired_deal(app: Dict[str, Any], code: str, dcode: Dict[str, str], now: str,
-                  enum_maps: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
-    desired = {dcode[xml]: app.get(key) for key, xml in APP_TO_XML.items()}
-    desired[dcode["B_CODE"]] = code
-    desired[dcode["B_UPDATED"]] = now
+                  enum_maps: Dict[str, Dict[str, str]], app_to_xml: Dict[str, str],
+                  code_xml: str, updated_xml: str) -> Dict[str, Any]:
+    desired = {dcode[xml]: app.get(key) for key, xml in app_to_xml.items()}
+    desired[dcode[code_xml]] = code
+    desired[dcode[updated_xml]] = now
     for field_code, vmap in enum_maps.items():
         if field_code not in desired:
             continue
@@ -188,15 +194,19 @@ def _contact_fields(a: Applicant1C, code_field: str, type_id: str,
     return fields
 
 
-def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[str, Any]:
+def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
+         level: str = "bachelor") -> Dict[str, Any]:
     client = client or BitrixClient.from_config(cfg)
-    category_id = cfg.category_id
+    prefix = LEVEL_PREFIX.get(level, "B")
+    app_to_xml = APP_TO_XML_BY_LEVEL.get(level, APP_TO_XML_BY_LEVEL["bachelor"])
+    desired_fields = DEAL_FIELDS_BY_LEVEL.get(level, DEAL_FIELDS_BACHELOR)
+    category_id = cfg.category_id_for(level)
     now = now_iso()
 
     # ── резолв полей по XML_ID ───────────────────────────────────────────────
     deal_idx = index_by_xml(client, "deal")
     contact_idx = index_by_xml(client, "contact")
-    _require_fields(deal_idx, DESIRED_DEAL_FIELDS, "deal")
+    _require_fields(deal_idx, desired_fields, "deal")
     _require_fields(contact_idx, DESIRED_CONTACT_FIELDS, "contact")
 
     dcode = {xml: row["FIELD_NAME"] for xml, row in deal_idx.items()}
@@ -206,11 +216,13 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
         if row.get("USER_TYPE_ID") == "enumeration"
     }
     code_field = contact_idx["PK_CODE"]["FIELD_NAME"]
-    contact_type_id = cfg.contact_type_id  # стандартный «Тип контакта» (напр. CLIENT=Абитуриенты)
-    group_field = dcode["B_GROUP"]
-    basis_field = dcode["B_BASIS"]
-    features_field = dcode["B_FEATURES"]
-    special_field = dcode["B_SPECIAL"]
+    contact_type_id = cfg.contact_type_id_for(level)  # «Тип контакта»: CLIENT=Абитуриенты, SUPPLIER=Магистры
+    code_xml = f"{prefix}_CODE"
+    updated_xml = f"{prefix}_UPDATED"
+    group_field = dcode[f"{prefix}_GROUP"]
+    basis_field = dcode[f"{prefix}_BASIS"]
+    features_field = dcode[f"{prefix}_FEATURES"]
+    special_field = dcode.get(f"{prefix}_SPECIAL")   # None у магистратуры (особого права нет)
 
     def dkey(group, basis, features, special):
         """Ключ заявления/сделки: группа + основание + особенности + особое право."""
@@ -244,10 +256,21 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
         else:
             deals_blank[cid].append(d)
 
+    # глобальный индекс сделок по (код+ключ) по ВСЕМ контактам: чтобы «осиротевшую»
+    # сделку (заявление уже в воронке, но на другом контакте) перепривязать к нужному
+    # контакту, а не создать дубль (защита от раздвоения контактов).
+    deals_by_codekey: Dict[Tuple[str, tuple], List[Dict[str, Any]]] = defaultdict(list)
+    for d in deals:
+        dc = clean_str(d.get(dcode[code_xml]))
+        g = clean_str(d.get(group_field))
+        if dc and g:
+            deals_by_codekey[(dc, dkey(d.get(group_field), d.get(basis_field),
+                                       d.get(features_field), d.get(special_field)))].append(d)
+
     # ── контакты: индекс по коду (все) и по ФИО (только контакты воронки) ──────
     contacts = client.list_all(
         "crm.contact.list",
-        select=["ID", "NAME", "LAST_NAME", "SECOND_NAME", "PHONE", "EMAIL", code_field],
+        select=["ID", "NAME", "LAST_NAME", "SECOND_NAME", "PHONE", "EMAIL", "TYPE_ID", code_field],
     )
     by_code: Dict[str, Dict[str, Any]] = {}
     # заготовки оператора в воронке: (множество слов ФИО, контакт) — порядок неважен
@@ -255,7 +278,13 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
     code_dups: set = set()
     for c in contacts:
         code = clean_str(c.get(code_field))
+        ctype = str(c.get("TYPE_ID") or "")
         if code:
+            # только контакты СВОЕГО уровня (или ещё не типизированные): чтобы sync
+            # магистратуры не трогал контакты бакалавриата (и наоборот), а «выбывшие»
+            # считались в пределах уровня.
+            if ctype not in ("", contact_type_id):
+                continue
             if code in by_code:
                 code_dups.add(code)
             by_code[code] = c
@@ -281,6 +310,7 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
         "matched_by_code": 0, "adopted": 0, "created_contacts": 0,
         "ambiguous": [], "conflicts": [], "failed": [], "dropped": [], "withdrawn": [],
         "created_deals": 0, "filled_deals": 0, "updated_deals": 0, "withdrawn_moved": 0,
+        "relinked_deals": 0,
         "code_dups": sorted(code_dups), "deal_dups": deal_dups, "examples": [],
     }
 
@@ -290,9 +320,10 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
             stats["dropped"].append({"code": code, "id": str(c["ID"]), "name": _contact_name(c)})
 
     # отозванные заявления: сделка с кодом есть в воронке, но её ключа нет в выгрузке
-    export_keys = {(a.code, dkey(app.get("group"), app.get("basis"), app.get("features"), app.get("special")))
+    export_keys = {(a.code, dkey(app.get("group"), app.get("basis"), app.get("features"),
+                                 app.get("special") if special_field else ""))
                    for a in applicants for app in a.applications}
-    code_field_deal = dcode["B_CODE"]
+    code_field_deal = dcode[code_xml]
     withdrawn_ops: List[Tuple[str, Dict[str, Any]]] = []
     for d in deals:
         dc = clean_str(d.get(code_field_deal))
@@ -373,16 +404,19 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
 
     # ── фаза B: сделки по группам (реюз пустых сделок оператора) ──────────────
     deal_ops: List[Tuple[str, Dict[str, Any]]] = []
+    relinked_ids: set = set()  # сделки, уже перепривязанные в этом прогоне (не трогать повторно)
     for a, cid in targets:
         grp = deals_group.get(cid, {}) if cid else {}
         blanks = list(deals_blank.get(cid, [])) if cid else []
         for app in a.applications:
             group = app.get("group") or ""
-            key = dkey(app.get("group"), app.get("basis"), app.get("features"), app.get("special"))
-            desired = _desired_deal(app, a.code, dcode, now, deal_enum_maps)
+            key = dkey(app.get("group"), app.get("basis"), app.get("features"),
+                       app.get("special") if special_field else "")
+            desired = _desired_deal(app, a.code, dcode, now, deal_enum_maps,
+                                    app_to_xml, code_xml, updated_xml)
             found = grp.get(key)
             if found:  # сделка для этого заявления уже есть → обновить изменения
-                changed = _deal_changes(found, desired, dcode["B_UPDATED"])
+                changed = _deal_changes(found, desired, dcode[updated_xml])
                 if changed:
                     stats["updated_deals"] += 1
                     if apply:
@@ -390,7 +424,7 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
                     _example(stats, "update", a, group, len(changed) - 1)
             elif blanks:  # заполнить пустую сделку оператора (реюз) → «Связались»
                 d = blanks.pop(0)
-                changed = _deal_changes(d, desired, dcode["B_UPDATED"])
+                changed = _deal_changes(d, desired, dcode[updated_xml])
                 # перенос вперёд: контакт был → «Связались», если стадия раньше
                 if stage_contacted and stage_sort.get(d.get("STAGE_ID"), 0) < stage_contacted["sort"]:
                     changed["STAGE_ID"] = stage_contacted["code"]
@@ -398,6 +432,20 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None) -> Dict[s
                 if apply and changed:
                     deal_ops.append(("crm.deal.update", {"id": d["ID"], "fields": changed}))
                 _example(stats, "fill", a, group, len(changed))
+            elif cid and [d for d in deals_by_codekey.get((a.code, key), [])
+                          if str(d.get("CONTACT_ID") or "") != cid and d["ID"] not in relinked_ids]:
+                # сделка (код+ключ) уже есть, но на ДРУГОМ контакте (раздвоение) →
+                # перепривязать к правильному контакту, а не плодить дубль.
+                strays = [d for d in deals_by_codekey.get((a.code, key), [])
+                          if str(d.get("CONTACT_ID") or "") != cid and d["ID"] not in relinked_ids]
+                stray = min(strays, key=lambda d: int(d["ID"]))
+                relinked_ids.add(stray["ID"])
+                changed = _deal_changes(stray, desired, dcode[updated_xml])
+                changed["CONTACT_ID"] = cid
+                stats["relinked_deals"] += 1
+                if apply:
+                    deal_ops.append(("crm.deal.update", {"id": stray["ID"], "fields": changed}))
+                _example(stats, "relink", a, group, len(changed))
             else:  # новая сделка → «Поступившие заявления»
                 stats["created_deals"] += 1
                 create = {k: v for k, v in desired.items() if v not in (None, "")}

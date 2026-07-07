@@ -272,6 +272,38 @@ def test_failed_create_reported(cfg, fake_bitrix, patch_people):
     assert client.writes_of("crm.deal.add") == []   # сделку-сироту не создаём
 
 
+def test_relink_stray_deal_instead_of_duplicate(cfg, fake_bitrix, patch_people):
+    # код на «правильном» контакте 501, а сделка того же (код+ключ) висит на ДРУГОМ
+    # контакте 999 (раздвоение) -> перепривязать к 501, а НЕ плодить дубль
+    contact = {"ID": "501", "LAST_NAME": "Иванов", "NAME": "Иван", "SECOND_NAME": "Иванович",
+               "UF_CRM_PK_CODE": "111", "PHONE": [{"VALUE": "+79160001122"}]}
+    stray = {"ID": "9001", "CONTACT_ID": "999", "CATEGORY_ID": "8", "STAGE_ID": "C8:NEW",
+             "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Техническая физика",
+             "UF_CRM_B_BASIS": "Бюджетная основа", "UF_CRM_B_FEATURES": "Общие места"}
+    patch_people([_person("111", "Иванов Иван Иванович", _app("Техническая физика"))])
+    client = fake_bitrix(contacts=[contact], deals=[stray])
+    stats = sync_mod.sync(cfg, "x", apply=True, client=client)
+
+    assert stats["matched_by_code"] == 1
+    assert stats["relinked_deals"] == 1 and stats["created_deals"] == 0
+    assert client.writes_of("crm.deal.add") == []           # дубль не создан
+    upd = [p for p in client.writes_of("crm.deal.update") if p["id"] == "9001"]
+    assert upd and upd[0]["fields"]["CONTACT_ID"] == "501"   # перепривязали к контакту с кодом
+
+
+def test_no_relink_when_deal_on_correct_contact(cfg, fake_bitrix, patch_people):
+    # сделка уже на нужном контакте -> обычное обновление, не перепривязка
+    contact = {"ID": "501", "LAST_NAME": "Иванов", "NAME": "Иван", "SECOND_NAME": "Иванович",
+               "UF_CRM_PK_CODE": "111", "PHONE": [{"VALUE": "+79160001122"}]}
+    deal = {"ID": "9001", "CONTACT_ID": "501", "CATEGORY_ID": "8", "STAGE_ID": "C8:NEW",
+            "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Техническая физика",
+            "UF_CRM_B_BASIS": "Бюджетная основа", "UF_CRM_B_FEATURES": "Общие места"}
+    patch_people([_person("111", "Иванов Иван Иванович", _app("Техническая физика"))])
+    client = fake_bitrix(contacts=[contact], deals=[deal])
+    stats = sync_mod.sync(cfg, "x", apply=True, client=client)
+    assert stats["relinked_deals"] == 0 and stats["created_deals"] == 0
+
+
 def test_idempotent_second_run(cfg, fake_bitrix, patch_people):
     patch_people([_person("111", "Иванов Иван Иванович", _app("Техническая физика"))])
     client = fake_bitrix()
@@ -280,3 +312,41 @@ def test_idempotent_second_run(cfg, fake_bitrix, patch_people):
     stats = sync_mod.sync(cfg, "x", apply=True, client=client)  # повтор
     assert stats["created_deals"] == 0 and stats["updated_deals"] == 0
     assert client.writes == []
+
+
+# ── магистратура (level="master") ─────────────────────────────────────────────
+
+_MAG_STAGES = [{"STATUS_ID": "C10:NEW", "SORT": "10", "NAME": "Поступившие заявления"}]
+
+
+def test_master_uses_own_funnel_fields_and_type(cfg, fake_bitrix, patch_people):
+    patch_people([_person("501", "Иванов Иван Иванович", _app("Системный анализ и управление"))])
+    client = fake_bitrix(stages=_MAG_STAGES)
+    stats = sync_mod.sync(cfg, "x", apply=True, client=client, level="master")
+
+    assert stats["created_contacts"] == 1 and stats["created_deals"] == 1
+    add = client.writes_of("crm.contact.add")[0]["fields"]
+    assert add["TYPE_ID"] == "SUPPLIER"                       # Магистры, не Абитуриенты
+    deal = client.writes_of("crm.deal.add")[0]["fields"]
+    assert deal["CATEGORY_ID"] == 10                          # воронка магистратуры
+    assert deal["STAGE_ID"] == "C10:NEW"
+    assert deal["UF_CRM_M_GROUP"] == "Системный анализ и управление"
+    assert deal["UF_CRM_M_CODE"] == "501"
+    assert "UF_CRM_B_GROUP" not in deal                       # бакалаврские поля не пишем
+    assert "UF_CRM_M_DEPT" not in deal                        # «Кафедра» операторская — sync не заполняет
+
+
+def test_master_key_ignores_special_no_duplicate(cfg, fake_bitrix, patch_people):
+    # существующая маг-сделка (у неё нет поля «особое право») matched заявлением -> обновление, НЕ дубль
+    contact = {"ID": "501", "LAST_NAME": "Иванов", "NAME": "Иван", "SECOND_NAME": "Иванович",
+               "UF_CRM_PK_CODE": "501", "PHONE": [{"VALUE": "+79160001122"}]}
+    deal = {"ID": "9100", "CONTACT_ID": "501", "CATEGORY_ID": "10", "STAGE_ID": "C10:NEW",
+            "UF_CRM_M_CODE": "501", "UF_CRM_M_GROUP": "Аэрокосмические технологии",
+            "UF_CRM_M_BASIS": "Бюджетная основа", "UF_CRM_M_FEATURES": "Общие места"}
+    patch_people([_person("501", "Иванов Иван Иванович", _app("Аэрокосмические технологии"))])
+    client = fake_bitrix(contacts=[contact], deals=[deal], stages=_MAG_STAGES)
+    stats = sync_mod.sync(cfg, "x", apply=True, client=client, level="master")
+
+    assert stats["matched_by_code"] == 1
+    assert stats["created_deals"] == 0                        # нашли существующую -> дубль не плодим
+    assert client.writes_of("crm.deal.add") == []

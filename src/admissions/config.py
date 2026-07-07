@@ -48,6 +48,20 @@ class Config:
         """Стандартный «Тип контакта» (TYPE_ID) для воронки: CLIENT=Абитуриенты и т.д."""
         return self.settings.get("contact_type_id", "CLIENT")
 
+    # ── параметры конкретного уровня (бакалавриат/магистратура/аспирантура) ────
+    def level_conf(self, level: str) -> Dict[str, Any]:
+        """Конфиг уровня из settings.yaml -> levels[<level>]."""
+        return (self.settings.get("levels", {}) or {}).get(level, {}) or {}
+
+    def category_id_for(self, level: str) -> int:
+        """ID воронки уровня (fallback — бакалавриатская category_id)."""
+        lv = self.level_conf(level)
+        return int(lv["category_id"]) if lv.get("category_id") is not None else self.category_id
+
+    def contact_type_id_for(self, level: str) -> str:
+        """«Тип контакта» уровня (fallback — бакалавриатский)."""
+        return self.level_conf(level).get("contact_type_id") or self.contact_type_id
+
     @property
     def levels(self) -> Dict[str, Dict[str, Any]]:
         """Уровни поступления для веб-приложения (bachelor активен, маг/асп — задел)."""

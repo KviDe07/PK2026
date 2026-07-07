@@ -78,7 +78,7 @@ def test_index_shows_upload_and_levels(client):
 
 
 def test_preview_renders_summary(client, monkeypatch):
-    monkeypatch.setattr(webapp, "sync", lambda cfg, path, apply=False: _stats())
+    monkeypatch.setattr(webapp, "sync", lambda cfg, path, apply=False, level="bachelor": _stats())
     monkeypatch.setattr(webapp, "_save_upload", lambda f: Path("upload_test.xlsx"))
     monkeypatch.setattr(webapp, "_write_report", lambda s: "razbor.xlsx")
     data = {"level": "bachelor", "file": (BytesIO(b"x"), "otchet.xlsx")}
@@ -91,15 +91,16 @@ def test_preview_renders_summary(client, monkeypatch):
 
 
 def test_preview_rejects_disabled_level(client, monkeypatch):
+    # аспирантура ещё выключена (enabled: false) -> отклоняем
     monkeypatch.setattr(webapp, "_save_upload", lambda f: Path("x.xlsx"))
-    data = {"level": "master", "file": (BytesIO(b"x"), "o.xlsx")}
+    data = {"level": "postgrad", "file": (BytesIO(b"x"), "o.xlsx")}
     r = client.post("/preview", data=data, content_type="multipart/form-data")
     assert r.status_code == 400
     assert "не настроен" in r.get_data(as_text=True)
 
 
 def test_export_redirects_to_download(client, monkeypatch):
-    def fake_export(cfg, out, client=None):
+    def fake_export(cfg, out, client=None, level="bachelor"):
         Path(out).write_text("x")
         return Path(out)
     monkeypatch.setattr(webapp, "export_deals", fake_export)
