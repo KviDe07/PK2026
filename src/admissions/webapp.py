@@ -16,6 +16,7 @@ import hmac
 import html
 import logging
 import os
+import threading
 from pathlib import Path
 
 from flask import Flask, Response, abort, redirect, render_template_string, request, send_from_directory, url_for
@@ -248,7 +249,7 @@ def preview():
                   title=lv["title"], report=report, url_for=url_for)
 
 
-# ── применить ─────────────────────────────────────────────────────────────────
+# ── применить (асинхронно, с блокировкой от параллельных запусков) ─────────────
 
 RESULT = """
 <p><a href="{{ url_for('index') }}">← на главную</a></p>
@@ -260,21 +261,75 @@ RESULT = """
 </div>
 """
 
+RUNNING = """
+<div class=card>
+  <h2 style=margin-top:0>Идёт запись в Битрикс…</h2>
+  <p>Уровень: <b>{{ title }}</b>. Большая выгрузка может занять несколько минут —
+     страница обновляется сама.</p>
+  <p class=muted>Не закрывай вкладку и <b>не запускай повторно</b>: синхронизация уже идёт,
+     повторный запуск заблокирован (чтобы не создавать дубли).</p>
+</div>
+<meta http-equiv="refresh" content="5; url={{ url_for('status') }}">
+"""
+
+BUSY = """
+<div class=card>
+  <p><b>⏳ Синхронизация уже выполняется.</b> Второй запуск заблокирован —
+     иначе создались бы дубли. Дождись завершения.</p>
+  <a class="btn btn-ghost" href="{{ url_for('status') }}">Показать статус</a>
+</div>
+"""
+
+# Состояние текущей задачи синка (одна на процесс). Блокировка гарантирует, что
+# одновременно идёт максимум ОДИН sync --apply — защита от гонки (504 → повторные нажатия).
+_JOB = {"state": "idle"}          # idle | running | done | error
+_JOB_LOCK = threading.Lock()
+
+
+def _run_sync_job(path, level, title):
+    """Фоновая задача: выполнить sync --apply и сохранить результат в _JOB."""
+    try:
+        stats = sync(_CFG, str(path), apply=True, level=level)
+        report = _write_report(stats)
+        with _JOB_LOCK:
+            _JOB.update(state="done", stats=stats, report=report, title=title, error=None)
+    except Exception as err:  # noqa: BLE001
+        log.exception("Фоновая sync-задача упала")
+        with _JOB_LOCK:
+            _JOB.update(state="error", error=str(err))
+
 
 @app.post("/apply")
 def apply():
     level = request.form.get("level", "bachelor")
     lv = _check_level(level)
-    fname = secure_filename(request.form.get("file", ""))
-    path = _CFG.input_dir / fname
-    if not fname or not path.exists():
-        abort(400, "Файл не найден — загрузите заново")
-    try:
-        stats = sync(_CFG, str(path), apply=True, level=level)
-    except Exception as err:  # noqa: BLE001
-        return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
-    report = _write_report(stats)
-    return render("Применено", RESULT, s=stats, title=lv["title"], report=report, url_for=url_for)
+    with _JOB_LOCK:
+        if _JOB.get("state") == "running":
+            # синк уже идёт — второй НЕ запускаем (защита от дублей при 504-повторах)
+            return render("Уже выполняется", BUSY, url_for=url_for), 409
+        fname = secure_filename(request.form.get("file", ""))
+        path = _CFG.input_dir / fname
+        if not fname or not path.exists():
+            abort(400, "Файл не найден — загрузите заново")
+        _JOB.clear()
+        _JOB.update(state="running", level=level, title=lv["title"])
+    threading.Thread(target=_run_sync_job, args=(path, level, lv["title"]), daemon=True).start()
+    return render("Запущено", RUNNING, title=lv["title"], url_for=url_for)
+
+
+@app.get("/status")
+def status():
+    with _JOB_LOCK:
+        st = dict(_JOB)
+    state = st.get("state")
+    if state == "running":
+        return render("Идёт синхронизация", RUNNING, title=st.get("title", ""), url_for=url_for)
+    if state == "error":
+        return render("Ошибка", ERROR, msg=st.get("error", "неизвестно"), url_for=url_for), 500
+    if state == "done":
+        return render("Применено", RESULT, s=st["stats"], title=st.get("title", ""),
+                      report=st.get("report"), url_for=url_for)
+    return redirect(url_for("index"))
 
 
 # ── выгрузка из Битрикса ──────────────────────────────────────────────────────

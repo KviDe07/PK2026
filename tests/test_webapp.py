@@ -99,6 +99,18 @@ def test_preview_rejects_disabled_level(client, monkeypatch):
     assert "не настроен" in r.get_data(as_text=True)
 
 
+def test_apply_refuses_concurrent_run(client):
+    # если синк уже идёт -> второй «Применить» отклоняется (защита от гонки/дублей при 504)
+    webapp._JOB.clear(); webapp._JOB.update(state="running", title="Бакалавриат")
+    try:
+        r = client.post("/apply", data={"level": "bachelor", "file": "x.xlsx"},
+                        content_type="multipart/form-data")
+        assert r.status_code == 409
+        assert "заблокирован" in r.get_data(as_text=True)
+    finally:
+        webapp._JOB.clear(); webapp._JOB.update(state="idle")
+
+
 def test_export_redirects_to_download(client, monkeypatch):
     def fake_export(cfg, out, client=None, level="bachelor"):
         Path(out).write_text("x")
