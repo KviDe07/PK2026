@@ -40,8 +40,10 @@ DEAL_FIELDS_BACHELOR: List[Dict[str, Any]] = [
     {"xml": "B_UPDATED",  "name": "UF_CRM_B_UPDATED",  "type": "string",  "label": "Б: Обновлено"},
 ]
 
-# Магистратура: нет БВИ/Целевик/особое право/контроль; есть операторская «Кафедра».
-# Поля сразу фильтруемые (filter=True) — учли, что у «Б:» фильтр приходилось включать вручную.
+# Магистратура: нет БВИ/Целевик/особое право/контроль. Поля сразу фильтруемые
+# (filter=True) — учли, что у «Б:» фильтр приходилось включать вручную.
+# «Кафедра» СВОЁ поле НЕ заводим: используем готовый enum-справочник Битрикса
+# UF_CRM_1750780247059 (label «Кафедра»); оператор выбирает из списка, sync его не трогает.
 DEAL_FIELDS_MASTER: List[Dict[str, Any]] = [
     {"xml": "M_CODE",     "name": "UF_CRM_M_CODE",     "type": "string",  "label": "М: Уникальный код", "filter": True},
     {"xml": "M_GROUP",    "name": "UF_CRM_M_GROUP",    "type": "string",  "label": "М: Конкурсная группа", "filter": True},
@@ -52,8 +54,6 @@ DEAL_FIELDS_MASTER: List[Dict[str, Any]] = [
     {"xml": "M_CONSENT",  "name": "UF_CRM_M_CONSENT",  "type": "string",  "label": "М: Согласие на зачисление", "filter": True},
     {"xml": "M_FEATURES", "name": "UF_CRM_M_FEATURES", "type": "string",  "label": "М: Особенности приема", "filter": True},
     {"xml": "M_UPDATED",  "name": "UF_CRM_M_UPDATED",  "type": "string",  "label": "М: Обновлено"},
-    # операторское — заполняет человек, sync не трогает:
-    {"xml": "M_DEPT",     "name": "UF_CRM_M_DEPT",     "type": "string",  "label": "М: Кафедра", "filter": True, "operator": True},
 ]
 
 DEAL_FIELDS_BY_LEVEL: Dict[str, List[Dict[str, Any]]] = {

@@ -42,7 +42,6 @@ _DEAL_UF = [
         {"xml": "M_CONSENT", "name": "UF_CRM_M_CONSENT"},
         {"xml": "M_FEATURES", "name": "UF_CRM_M_FEATURES"},
         {"xml": "M_UPDATED", "name": "UF_CRM_M_UPDATED"},
-        {"xml": "M_DEPT", "name": "UF_CRM_M_DEPT"},
     ]
 ]
 _CONTACT_UF = [
