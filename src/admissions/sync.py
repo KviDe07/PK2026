@@ -27,7 +27,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .applicant import Applicant1C, build_applicants
+from .applicant import Applicant1C, build_applicants, build_applicants_superservice
 from .bitrix_client import BitrixClient, extract_value
 from .bitrix_fields import (
     DEAL_FIELDS_BACHELOR,
@@ -195,10 +195,15 @@ def _contact_fields(a: Applicant1C, code_field: str, type_id: str,
 
 
 def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
-         level: str = "bachelor") -> Dict[str, Any]:
+         level: str = "bachelor", source: str = "1c") -> Dict[str, Any]:
     client = client or BitrixClient.from_config(cfg)
     prefix = LEVEL_PREFIX.get(level, "B")
     app_to_xml = APP_TO_XML_BY_LEVEL.get(level, APP_TO_XML_BY_LEVEL["bachelor"])
+    # Суперсервис не содержит баллов: исключаем их из записи, чтобы поля остались
+    # пустыми (при создании) и не затёрлись у уже проставленных из 1С (при обновлении) —
+    # баллы дозаполняет позже sync из 1С.
+    if source == "superservice":
+        app_to_xml = {k: v for k, v in app_to_xml.items() if k not in ("score", "score_id")}
     desired_fields = DEAL_FIELDS_BY_LEVEL.get(level, DEAL_FIELDS_BACHELOR)
     category_id = cfg.category_id_for(level)
     now = now_iso()
@@ -229,7 +234,11 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
         return (clean_str(group) or "", clean_str(basis) or "",
                 clean_str(features) or "", clean_str(special) or "")
 
-    applicants: List[Applicant1C] = build_applicants(apps_path, cfg.columns_1c or None)
+    if source == "superservice":
+        applicants: List[Applicant1C] = build_applicants_superservice(
+            apps_path, cfg.mapping_superservice or None)
+    else:
+        applicants = build_applicants(apps_path, cfg.columns_1c or None)
     export_codes = {a.code for a in applicants}
 
     # ── сделки воронки: по группам + пустые (реюз), множество контактов воронки ─
@@ -314,33 +323,47 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
         "code_dups": sorted(code_dups), "deal_dups": deal_dups, "examples": [],
     }
 
-    # выбывшие: код есть на контакте, но его нет в новой выгрузке
-    for code, c in by_code.items():
-        if code not in export_codes:
-            stats["dropped"].append({"code": code, "id": str(c["ID"]), "name": _contact_name(c)})
+    # выбывшие: код есть на контакте, но его нет в новой выгрузке.
+    # Для суперсервиса состав неполон относительно 1С → «выбывших» по нему не считаем.
+    if source != "superservice":
+        for code, c in by_code.items():
+            if code not in export_codes:
+                stats["dropped"].append({"code": code, "id": str(c["ID"]), "name": _contact_name(c)})
 
-    # отозванные заявления: сделка с кодом есть в воронке, но её ключа нет в выгрузке
-    export_keys = {(a.code, dkey(app.get("group"), app.get("basis"), app.get("features"),
-                                 app.get("special") if special_field else ""))
-                   for a in applicants for app in a.applications}
     code_field_deal = dcode[code_xml]
+    score_field = dcode.get(f"{prefix}_SCORE")
     withdrawn_ops: List[Tuple[str, Dict[str, Any]]] = []
-    for d in deals:
-        dc = clean_str(d.get(code_field_deal))
-        if not dc:
-            continue  # пустая операторская сделка — не отозвана
-        k = dkey(d.get(group_field), d.get(basis_field), d.get(features_field), d.get(special_field))
-        if (dc, k) in export_keys:
-            continue
+
+    def _mark_withdrawn(d: Dict[str, Any], k: tuple) -> None:
+        """В отчёт + авто-перенос сделки в стадию «отозвано» (кроме зачисленных/там же)."""
         sid = d.get("STAGE_ID")
         stats["withdrawn"].append({
-            "code": dc, "deal": d["ID"], "key": " / ".join(p for p in k if p),
-            "stage": stage_name.get(sid, sid)})
-        # авто-перенос в стадию «отозвано» (если задана), кроме уже зачисленных/там же
+            "code": clean_str(d.get(code_field_deal)), "deal": d["ID"],
+            "key": " / ".join(p for p in k if p), "stage": stage_name.get(sid, sid)})
         if stage_withdrawn and sid != stage_withdrawn["code"] and stage_sem.get(sid) != "S":
             stats["withdrawn_moved"] += 1
             withdrawn_ops.append(("crm.deal.update",
                                   {"id": d["ID"], "fields": {"STAGE_ID": stage_withdrawn["code"]}}))
+
+    if source != "superservice":
+        # 1С: отозвано = сделка с кодом в воронке, ключа которой НЕТ в новой выгрузке.
+        # Но только сделки, реально ведомые 1С (с проставленным баллом): свежие сделки
+        # из суперсервиса (баллы ещё не дозаполнены) ложно отзывать нельзя.
+        export_keys = {(a.code, dkey(app.get("group"), app.get("basis"), app.get("features"),
+                                     app.get("special") if special_field else ""))
+                       for a in applicants for app in a.applications}
+        for d in deals:
+            dc = clean_str(d.get(code_field_deal))
+            if not dc:
+                continue  # пустая операторская сделка — не отозвана
+            k = dkey(d.get(group_field), d.get(basis_field), d.get(features_field), d.get(special_field))
+            if (dc, k) in export_keys:
+                continue
+            if score_field and not clean_str(d.get(score_field)):
+                continue  # без балла — не 1С-сделка (напр. из суперсервиса) → не отзываем
+            _mark_withdrawn(d, k)
+    # Для суперсервиса «отсутствие в выгрузке» отзывом НЕ считаем (файл частичный
+    # относительно 1С); отозванные заявки помечены флагом и обрабатываются в фазе B.
 
     # ── фаза A: классификация контактов ──────────────────────────────────────
     contact_creates: List[Applicant1C] = []
@@ -405,11 +428,27 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
     # ── фаза B: сделки по группам (реюз пустых сделок оператора) ──────────────
     deal_ops: List[Tuple[str, Dict[str, Any]]] = []
     relinked_ids: set = set()  # сделки, уже перепривязанные в этом прогоне (не трогать повторно)
+
+    def _wd_stage(sid: Optional[str]) -> Optional[str]:
+        """Стадия «отозвано» для отозванной суперсервис-заявки (кроме зачисленных/там же)."""
+        if stage_withdrawn and stage_sem.get(sid) != "S" and sid != stage_withdrawn["code"]:
+            return stage_withdrawn["code"]
+        return None
+
+    def _wd_report(d: Dict[str, Any], k: tuple) -> None:
+        """Существующую сделку отозванной заявки — в отчёт «Отозванные»."""
+        sid = d.get("STAGE_ID")
+        stats["withdrawn"].append({
+            "code": clean_str(d.get(code_field_deal)), "deal": d["ID"],
+            "key": " / ".join(p for p in k if p), "stage": stage_name.get(sid, sid)})
+
     for a, cid in targets:
         grp = deals_group.get(cid, {}) if cid else {}
         blanks = list(deals_blank.get(cid, [])) if cid else []
         for app in a.applications:
             group = app.get("group") or ""
+            # суперсервис: заявка помечена «Отозвано» → её сделку ведём в стадию «отозвано»
+            is_wd = bool(source == "superservice" and app.get("withdrawn"))
             key = dkey(app.get("group"), app.get("basis"), app.get("features"),
                        app.get("special") if special_field else "")
             desired = _desired_deal(app, a.code, dcode, now, deal_enum_maps,
@@ -417,6 +456,12 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
             found = grp.get(key)
             if found:  # сделка для этого заявления уже есть → обновить изменения
                 changed = _deal_changes(found, desired, dcode[updated_xml])
+                wd = _wd_stage(found.get("STAGE_ID")) if is_wd else None
+                if wd:
+                    changed["STAGE_ID"] = wd
+                    stats["withdrawn_moved"] += 1
+                if is_wd:
+                    _wd_report(found, key)
                 if changed:
                     stats["updated_deals"] += 1
                     if apply:
@@ -425,9 +470,15 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
             elif blanks:  # заполнить пустую сделку оператора (реюз) → «Связались»
                 d = blanks.pop(0)
                 changed = _deal_changes(d, desired, dcode[updated_xml])
-                # перенос вперёд: контакт был → «Связались», если стадия раньше
-                if stage_contacted and stage_sort.get(d.get("STAGE_ID"), 0) < stage_contacted["sort"]:
+                wd = _wd_stage(d.get("STAGE_ID")) if is_wd else None
+                if wd:  # отозванная заявка → сразу «отозвано» (приоритетнее «Связались»)
+                    changed["STAGE_ID"] = wd
+                    stats["withdrawn_moved"] += 1
+                elif stage_contacted and stage_sort.get(d.get("STAGE_ID"), 0) < stage_contacted["sort"]:
+                    # перенос вперёд: контакт был → «Связались», если стадия раньше
                     changed["STAGE_ID"] = stage_contacted["code"]
+                if is_wd:
+                    _wd_report(d, key)
                 stats["filled_deals"] += 1
                 if apply and changed:
                     deal_ops.append(("crm.deal.update", {"id": d["ID"], "fields": changed}))
@@ -442,19 +493,32 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
                 relinked_ids.add(stray["ID"])
                 changed = _deal_changes(stray, desired, dcode[updated_xml])
                 changed["CONTACT_ID"] = cid
+                wd = _wd_stage(stray.get("STAGE_ID")) if is_wd else None
+                if wd:
+                    changed["STAGE_ID"] = wd
+                    stats["withdrawn_moved"] += 1
+                if is_wd:
+                    _wd_report(stray, key)
                 stats["relinked_deals"] += 1
                 if apply:
                     deal_ops.append(("crm.deal.update", {"id": stray["ID"], "fields": changed}))
                 _example(stats, "relink", a, group, len(changed))
-            else:  # новая сделка → «Поступившие заявления»
+            else:  # новая сделка → «Поступившие заявления» (или сразу «отозвано»)
                 stats["created_deals"] += 1
                 create = {k: v for k, v in desired.items() if v not in (None, "")}
                 create["TITLE"] = _deal_title(a, app)
                 create["CATEGORY_ID"] = category_id
                 if cid:
                     create["CONTACT_ID"] = cid
-                if stage_application:
-                    create["STAGE_ID"] = stage_application
+                target_stage = (stage_withdrawn["code"] if (is_wd and stage_withdrawn)
+                                else stage_application)
+                if target_stage:
+                    create["STAGE_ID"] = target_stage
+                if is_wd:
+                    stats["withdrawn"].append({
+                        "code": a.code, "deal": "(новая)",
+                        "key": " / ".join(p for p in key if p),
+                        "stage": stage_name.get(target_stage, target_stage)})
                 if apply and cid:
                     deal_ops.append(("crm.deal.add", {"fields": create}))
                 _example(stats, "create", a, group, len(create))

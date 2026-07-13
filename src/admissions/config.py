@@ -22,6 +22,7 @@ class Config:
     mapping_1c: Dict[str, Any]
     mapping_deal: Dict[str, Any]
     mapping_contact: Dict[str, Any]
+    mapping_superservice: Dict[str, Any]
     bitrix_webhook_url: Optional[str]
 
     # ── пути ────────────────────────────────────────────────────────────────
@@ -94,6 +95,10 @@ class Config:
     def columns_1c(self) -> Dict[str, str]:
         return self.mapping_1c.get("columns", {}) or {}
 
+    @property
+    def columns_superservice(self) -> Dict[str, str]:
+        return self.mapping_superservice.get("columns", {}) or {}
+
     # ── загрузка ──────────────────────────────────────────────────────────────
     @classmethod
     def load(cls, root: Optional[Path] = None, config_dir: Optional[Path] = None) -> "Config":
@@ -108,6 +113,7 @@ class Config:
             mapping_1c=_load_yaml(config_dir / "mapping_1c.yaml"),
             mapping_deal=_load_yaml(config_dir / "mapping_deal.yaml", required=False),
             mapping_contact=_load_yaml(config_dir / "mapping_contact.yaml", required=False),
+            mapping_superservice=_load_yaml(config_dir / "mapping_superservice.yaml", required=False),
             bitrix_webhook_url=os.environ.get("BITRIX_WEBHOOK_URL"),
         )
 

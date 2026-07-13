@@ -78,10 +78,11 @@ def test_index_shows_upload_and_levels(client):
 
 
 def test_preview_renders_summary(client, monkeypatch):
-    monkeypatch.setattr(webapp, "sync", lambda cfg, path, apply=False, level="bachelor": _stats())
+    monkeypatch.setattr(webapp, "sync",
+                        lambda cfg, path, apply=False, level="bachelor", source="1c": _stats())
     monkeypatch.setattr(webapp, "_save_upload", lambda f: Path("upload_test.xlsx"))
     monkeypatch.setattr(webapp, "_write_report", lambda s: "razbor.xlsx")
-    data = {"level": "bachelor", "file": (BytesIO(b"x"), "otchet.xlsx")}
+    data = {"level": "bachelor", "source": "1c", "file": (BytesIO(b"x"), "otchet.xlsx")}
     r = client.post("/preview", data=data, content_type="multipart/form-data")
     body = r.get_data(as_text=True)
     assert r.status_code == 200

@@ -33,11 +33,7 @@ class Applicant1C:
         return [a["group"] for a in self.applications if a.get("group")]
 
 
-def build_applicants(
-    path: str | Path, colmap: Optional[Dict[str, str]] = None
-) -> List[Applicant1C]:
-    """Собрать список абитуриентов из файла заявлений 1С."""
-    parsed = parse_applications(path, colmap)
+def _to_applicants(parsed: Dict[str, Dict[str, Any]]) -> List[Applicant1C]:
     return [
         Applicant1C(
             code=data["code"],
@@ -48,3 +44,23 @@ def build_applicants(
         )
         for data in parsed.values()
     ]
+
+
+def build_applicants(
+    path: str | Path, colmap: Optional[Dict[str, str]] = None
+) -> List[Applicant1C]:
+    """Собрать список абитуриентов из файла заявлений 1С."""
+    return _to_applicants(parse_applications(path, colmap))
+
+
+def build_applicants_superservice(
+    path: str | Path, mapping: Optional[Dict[str, Any]] = None
+) -> List[Applicant1C]:
+    """Собрать список абитуриентов из выгрузки суперсервиса (ЕПГУ).
+
+    Заявления приходят в терминах 1С (маппинг значений в парсере), но без баллов
+    и с флагом 'withdrawn' на отозванных заявках — их обрабатывает sync(source=...).
+    """
+    from .ingest_superservice import parse_superservice
+
+    return _to_applicants(parse_superservice(path, mapping))

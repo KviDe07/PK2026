@@ -131,7 +131,7 @@ def cmd_sync(args: argparse.Namespace, cfg: Config) -> int:
         return 2
     log.info("Выгрузка 1С: %s", apps.name)
 
-    stats = sync(cfg, str(apps), apply=args.apply, level=args.level)
+    stats = sync(cfg, str(apps), apply=args.apply, level=args.level, source=args.source)
     header = "ПРИМЕНЕНО" if args.apply else "DRY-RUN — без записи"
     log.info(
         "%s | абитуриентов: %d | заявлений: %d | по коду: %d | приняты заготовки: %d | "
@@ -199,10 +199,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--apply", action="store_true", help="применить (без флага — предпросмотр)")
     sp.set_defaults(func=cmd_setup_funnel)
 
-    sp = sub.add_parser("sync", help="обновить контакты и сделки в Битриксе по выгрузке 1С")
-    sp.add_argument("--applications", help="файл выгрузки 1С (по умолчанию свежий .xls/.xlsx из data/input)")
+    sp = sub.add_parser("sync", help="обновить контакты и сделки в Битриксе по выгрузке 1С/суперсервиса")
+    sp.add_argument("--applications", help="файл выгрузки (по умолчанию свежий .xls/.xlsx из data/input)")
     sp.add_argument("--apply", action="store_true", help="записать изменения (без флага — только показать)")
     sp.add_argument("--level", default="bachelor", help="уровень: bachelor | master")
+    sp.add_argument("--source", default="1c", choices=["1c", "superservice"],
+                    help="источник заявлений: 1c (выгрузка 1С) | superservice (ЕПГУ, без баллов)")
     sp.set_defaults(func=cmd_sync)
 
     sp = sub.add_parser("export", help="выгрузить сделки воронки в Excel (с комментариями)")

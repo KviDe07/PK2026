@@ -131,7 +131,14 @@ INDEX = """
       </select>
     </div>
     <div>
-      <label>Файл выгрузки 1С (.xls / .xlsx)</label>
+      <label>Источник заявлений</label>
+      <select name=source required>
+        <option value="1c">Выгрузка 1С</option>
+        <option value="superservice">Суперсервис (ЕПГУ) — без баллов</option>
+      </select>
+    </div>
+    <div>
+      <label>Файл выгрузки (.xls / .xlsx)</label>
       <input type=file name=file accept=".xls,.xlsx" required>
     </div>
     <div style="flex:0 0 100%">
@@ -219,12 +226,13 @@ SUMMARY = """
 
 PREVIEW = """
 <p><a href="{{ url_for('index') }}">← назад</a></p>
-<div class=flash flash-ok>Предпросмотр — записи ещё не было. Файл: <b>{{ fname }}</b> · уровень: <b>{{ title }}</b></div>
+<div class=flash flash-ok>Предпросмотр — записи ещё не было. Файл: <b>{{ fname }}</b> · уровень: <b>{{ title }}</b> · источник: <b>{{ source_label }}</b></div>
 """ + SUMMARY + """
 <div class=card>
   <form method=post action="{{ url_for('apply') }}">
     <input type=hidden name=file value="{{ fname }}">
     <input type=hidden name=level value="{{ level }}">
+    <input type=hidden name=source value="{{ src_val }}">
     <button class=btn-ok type=submit>Применить — записать в Битрикс</button>
     <a class="btn btn-ghost" href="{{ url_for('index') }}">Отмена</a>
   </form>
@@ -233,19 +241,24 @@ PREVIEW = """
 """
 
 
+_SOURCE_LABELS = {"1c": "Выгрузка 1С", "superservice": "Суперсервис (ЕПГУ)"}
+
+
 @app.post("/preview")
 def preview():
     level = request.form.get("level", "bachelor")
+    source = request.form.get("source", "1c")
     lv = _check_level(level)
     if "file" not in request.files or not request.files["file"].filename:
-        abort(400, "Не выбран файл 1С")
+        abort(400, "Не выбран файл")
     path = _save_upload(request.files["file"])
     try:
-        stats = sync(_CFG, str(path), apply=False, level=level)
+        stats = sync(_CFG, str(path), apply=False, level=level, source=source)
     except Exception as err:  # noqa: BLE001
         return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
     report = _write_report(stats)
     return render("Предпросмотр", PREVIEW, s=stats, fname=path.name, level=level,
+                  src_val=source, source_label=_SOURCE_LABELS.get(source, source),
                   title=lv["title"], report=report, url_for=url_for)
 
 
@@ -286,10 +299,10 @@ _JOB = {"state": "idle"}          # idle | running | done | error
 _JOB_LOCK = threading.Lock()
 
 
-def _run_sync_job(path, level, title):
+def _run_sync_job(path, level, title, source="1c"):
     """Фоновая задача: выполнить sync --apply и сохранить результат в _JOB."""
     try:
-        stats = sync(_CFG, str(path), apply=True, level=level)
+        stats = sync(_CFG, str(path), apply=True, level=level, source=source)
         report = _write_report(stats)
         with _JOB_LOCK:
             _JOB.update(state="done", stats=stats, report=report, title=title, error=None)
@@ -302,6 +315,7 @@ def _run_sync_job(path, level, title):
 @app.post("/apply")
 def apply():
     level = request.form.get("level", "bachelor")
+    source = request.form.get("source", "1c")
     lv = _check_level(level)
     with _JOB_LOCK:
         if _JOB.get("state") == "running":
@@ -313,7 +327,7 @@ def apply():
             abort(400, "Файл не найден — загрузите заново")
         _JOB.clear()
         _JOB.update(state="running", level=level, title=lv["title"])
-    threading.Thread(target=_run_sync_job, args=(path, level, lv["title"]), daemon=True).start()
+    threading.Thread(target=_run_sync_job, args=(path, level, lv["title"], source), daemon=True).start()
     return render("Запущено", RUNNING, title=lv["title"], url_for=url_for)
 
 

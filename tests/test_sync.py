@@ -222,8 +222,10 @@ def test_withdrawn_deal_detected(cfg, fake_bitrix, patch_people):
     live = {"ID": "9001", "CONTACT_ID": "501", "CATEGORY_ID": "8", "STAGE_ID": "C8:NEW",
             "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Техническая физика",
             "UF_CRM_B_BASIS": "Бюджетная основа", "UF_CRM_B_FEATURES": "Общие места"}
+    # у отозванной сделки есть балл (ведётся 1С) — иначе её приняли бы за суперсервис-сделку
     gone = {"ID": "9002", "CONTACT_ID": "501", "CATEGORY_ID": "8", "STAGE_ID": "C8:NEW",
-            "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Геокосмические науки и технологии"}
+            "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Геокосмические науки и технологии",
+            "UF_CRM_B_SCORE": "250"}
     patch_people([_person("111", "Иванов Иван Иванович", _app("Техническая физика"))])
     client = fake_bitrix(contacts=[contact], deals=[live, gone])
     stats = sync_mod.sync(cfg, "x", apply=True, client=client)
@@ -236,7 +238,8 @@ def test_withdrawn_deal_moved_when_stage_set(cfg, fake_bitrix, patch_people):
     contact = {"ID": "501", "LAST_NAME": "Иванов", "NAME": "Иван", "SECOND_NAME": "Иванович",
                "UF_CRM_PK_CODE": "111", "PHONE": [{"VALUE": "+79160001122"}]}
     gone = {"ID": "9002", "CONTACT_ID": "501", "CATEGORY_ID": "8", "STAGE_ID": "C8:NEW",
-            "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Геокосмические науки и технологии"}
+            "UF_CRM_B_CODE": "111", "UF_CRM_B_GROUP": "Геокосмические науки и технологии",
+            "UF_CRM_B_SCORE": "250"}
     patch_people([_person("111", "Иванов Иван Иванович", _app("Техническая физика"))])
     client = fake_bitrix(contacts=[contact], deals=[gone])
     stats = sync_mod.sync(cfg, "x", apply=True, client=client)
