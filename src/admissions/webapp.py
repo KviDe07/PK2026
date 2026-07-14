@@ -384,21 +384,83 @@ def export():
     return redirect(url_for("download", name=out.name))
 
 
+# ── симуляция (асинхронно: долгий расчёт не должен вешать запрос/ловить 504) ────
+
+SIM_RUNNING = """
+<div class=card>
+  <h2 style=margin-top:0>Идёт расчёт симуляции…</h2>
+  <p>Большая выгрузка может считаться до минуты — страница обновится сама.</p>
+  <p class=muted>Не закрывай вкладку и <b>не запускай повторно</b> — расчёт уже идёт.</p>
+</div>
+<meta http-equiv="refresh" content="4; url={{ url_for('simulate_status') }}">
+"""
+
+SIM_BUSY = """
+<div class=card>
+  <p><b>⏳ Расчёт уже идёт.</b> Повторный запуск заблокирован — дождись завершения.</p>
+  <a class="btn btn-ghost" href="{{ url_for('simulate_status') }}">Показать статус</a>
+</div>
+"""
+
+SIM_DONE = """
+<p><a href="{{ url_for('index') }}">← на главную</a></p>
+<div class=flash flash-ok><b>Готово.</b> Зачислено (проходят сейчас): <b>{{ res.enrolled }}</b>
+  из {{ res.applicants }} абитуриентов ({{ 'только с согласием' if res.only_consent else 'все' }}),
+  конкурсных групп: {{ res.groups }}.</div>
+<div class=card>
+  <a class="btn btn-primary" href="{{ url_for('download', name=name) }}">Скачать Excel</a>
+  <a class="btn btn-ghost" href="{{ url_for('index') }}">На главную</a>
+</div>
+"""
+
+_SIM_JOB = {"state": "idle"}          # idle | running | done | error
+_SIM_LOCK = threading.Lock()
+
+
+def _run_sim_job(path, only_consent, require_control):
+    """Фоновая задача: посчитать симуляцию и сохранить результат в _SIM_JOB."""
+    from .simulation import simulate_admission
+    try:
+        out = _CFG.output_dir / f"simulation_{timestamp_slug()}.xlsx"
+        res = simulate_admission(_CFG, str(path), out,
+                                 only_consent=only_consent, require_control=require_control)
+        with _SIM_LOCK:
+            _SIM_JOB.update(state="done", result=res, name=out.name, error=None)
+    except Exception as err:  # noqa: BLE001
+        log.exception("Симуляция упала")
+        with _SIM_LOCK:
+            _SIM_JOB.update(state="error", error=str(err))
+
+
 @app.post("/simulate")
 def simulate():
     if "file" not in request.files or not request.files["file"].filename:
         abort(400, "Не выбран файл выгрузки")
     only_consent = bool(request.form.get("only_consent"))
     require_control = bool(request.form.get("require_control"))
-    path = _save_upload(request.files["file"])
-    try:
-        from .simulation import simulate_admission
-        out = _CFG.output_dir / f"simulation_{timestamp_slug()}.xlsx"
-        simulate_admission(_CFG, str(path), out,
-                           only_consent=only_consent, require_control=require_control)
-    except Exception as err:  # noqa: BLE001
-        return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
-    return redirect(url_for("download", name=out.name))
+    with _SIM_LOCK:
+        if _SIM_JOB.get("state") == "running":
+            return render("Уже считается", SIM_BUSY, url_for=url_for), 409
+        path = _save_upload(request.files["file"])
+        _SIM_JOB.clear()
+        _SIM_JOB.update(state="running")
+    threading.Thread(target=_run_sim_job, args=(path, only_consent, require_control),
+                     daemon=True).start()
+    return render("Расчёт запущен", SIM_RUNNING, url_for=url_for)
+
+
+@app.get("/simulate-status")
+def simulate_status():
+    with _SIM_LOCK:
+        st = dict(_SIM_JOB)
+    state = st.get("state")
+    if state == "running":
+        return render("Идёт расчёт", SIM_RUNNING, url_for=url_for)
+    if state == "error":
+        return render("Ошибка", ERROR, msg=st.get("error", "неизвестно"), url_for=url_for), 500
+    if state == "done":
+        return render("Готово", SIM_DONE, res=st["result"], name=st["name"], url_for=url_for)
+    return redirect(url_for("index"))
 
 
 @app.get("/download/<path:name>")
