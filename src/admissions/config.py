@@ -23,6 +23,7 @@ class Config:
     mapping_deal: Dict[str, Any]
     mapping_contact: Dict[str, Any]
     mapping_superservice: Dict[str, Any]
+    kcp_bachelor: Dict[str, Any]
     bitrix_webhook_url: Optional[str]
 
     # ── пути ────────────────────────────────────────────────────────────────
@@ -99,6 +100,18 @@ class Config:
     def columns_superservice(self) -> Dict[str, str]:
         return self.mapping_superservice.get("columns", {}) or {}
 
+    @property
+    def kcp(self) -> Dict[str, tuple]:
+        """КЦП бакалавриата: {конкурсная группа: (общий, особая, отдельная, целевая)}."""
+        groups = (self.kcp_bachelor.get("groups", {}) or {})
+        return {g: tuple(v.get("kcp", [0, 0, 0, 0])) for g, v in groups.items()}
+
+    @property
+    def kcp_school(self) -> Dict[str, str]:
+        """Физтех-школа по конкурсной группе (для сводки симулятора)."""
+        groups = (self.kcp_bachelor.get("groups", {}) or {})
+        return {g: (v.get("school") or "") for g, v in groups.items()}
+
     # ── загрузка ──────────────────────────────────────────────────────────────
     @classmethod
     def load(cls, root: Optional[Path] = None, config_dir: Optional[Path] = None) -> "Config":
@@ -114,6 +127,7 @@ class Config:
             mapping_deal=_load_yaml(config_dir / "mapping_deal.yaml", required=False),
             mapping_contact=_load_yaml(config_dir / "mapping_contact.yaml", required=False),
             mapping_superservice=_load_yaml(config_dir / "mapping_superservice.yaml", required=False),
+            kcp_bachelor=_load_yaml(config_dir / "kcp_bachelor.yaml", required=False),
             bitrix_webhook_url=os.environ.get("BITRIX_WEBHOOK_URL"),
         )
 

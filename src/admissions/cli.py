@@ -169,6 +169,26 @@ def cmd_export(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+# ── simulate (прогноз зачисления) ─────────────────────────────────────────────
+
+def cmd_simulate(args: argparse.Namespace, cfg: Config) -> int:
+    from .simulation import simulate_admission
+
+    apps = Path(args.file) if args.file else _latest_file(cfg.input_dir, (".xls", ".xlsx"))
+    if not apps or not apps.exists():
+        log.error("Не найден файл выгрузки (укажите файл или положите .xls/.xlsx в %s)", cfg.input_dir)
+        return 2
+    out = Path(args.out) if args.out else cfg.output_dir / f"simulation_{timestamp_slug()}.xlsx"
+    res = simulate_admission(cfg, str(apps), out,
+                             only_consent=not args.all_applicants,
+                             require_control=not args.ignore_control)
+    log.info("Симуляция (%s): абитуриентов %d | с согласием %d | зачислено %d | групп %d",
+             "все" if args.all_applicants else "только с согласием",
+             res["applicants"], res["with_consent"], res["enrolled"], res["groups"])
+    log.info("Результат: %s", res["path"])
+    return 0
+
+
 # ── парсер ────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -211,6 +231,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", help="путь к выходному .xlsx (по умолчанию в data/output)")
     sp.add_argument("--level", default="bachelor", help="уровень: bachelor | master")
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("simulate", help="симуляция зачисления бакалавриата (прогноз проходных)")
+    sp.add_argument("file", nargs="?", help="файл выгрузки (.xls/.xlsx); по умолчанию свежий из data/input")
+    sp.add_argument("--out", help="путь к результату .xlsx (по умолчанию в data/output)")
+    sp.add_argument("--all-applicants", action="store_true", help="считать всех, а не только с согласием")
+    sp.add_argument("--ignore-control", action="store_true", help="не фильтровать по «Контроль пройден»")
+    sp.set_defaults(func=cmd_simulate)
 
     return p
 

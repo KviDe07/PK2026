@@ -157,6 +157,30 @@ INDEX = """
     {% endif %}
   {% endfor %}
 </div>
+
+<div class=card>
+  <h2 style=margin-top:0>Симуляция зачисления (бакалавриат)</h2>
+  <p class=muted>Прогноз проходных по выгрузке с баллами (лист с «Уникальный код», баллами по
+     предметам/ИД и приоритетами). Результат — Excel: сводка + листы по группам с подсветкой проходящих.</p>
+  <form method=post action="{{ url_for('simulate') }}" enctype=multipart/form-data class=row>
+    <div>
+      <label>Файл выгрузки (.xls / .xlsx)</label>
+      <input type=file name=file accept=".xls,.xlsx" required>
+    </div>
+    <div style="flex:0 0 100%">
+      <label style="font-weight:400;display:inline-block;margin-right:20px">
+        <input type=checkbox name=only_consent value=1 checked> только с согласием на зачисление
+      </label>
+      <label style="font-weight:400;display:inline-block">
+        <input type=checkbox name=require_control value=1 checked> только прошедшие «Контроль пройден»
+      </label>
+    </div>
+    <div style="flex:0 0 100%">
+      <button class=btn-primary type=submit>Рассчитать и скачать</button>
+      <span class=muted>Расчёт может занять несколько секунд.</span>
+    </div>
+  </form>
+</div>
 """
 
 
@@ -355,6 +379,23 @@ def export():
     try:
         out = _CFG.output_dir / f"deals_export_{level}_{timestamp_slug()}.xlsx"
         export_deals(_CFG, out, level=level)
+    except Exception as err:  # noqa: BLE001
+        return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
+    return redirect(url_for("download", name=out.name))
+
+
+@app.post("/simulate")
+def simulate():
+    if "file" not in request.files or not request.files["file"].filename:
+        abort(400, "Не выбран файл выгрузки")
+    only_consent = bool(request.form.get("only_consent"))
+    require_control = bool(request.form.get("require_control"))
+    path = _save_upload(request.files["file"])
+    try:
+        from .simulation import simulate_admission
+        out = _CFG.output_dir / f"simulation_{timestamp_slug()}.xlsx"
+        simulate_admission(_CFG, str(path), out,
+                           only_consent=only_consent, require_control=require_control)
     except Exception as err:  # noqa: BLE001
         return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
     return redirect(url_for("download", name=out.name))
