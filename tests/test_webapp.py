@@ -73,8 +73,10 @@ def test_index_shows_upload_and_levels(client):
     body = r.get_data(as_text=True)
     assert r.status_code == 200
     assert "Загрузка из 1С" in body
-    assert "Базовое высшее" in body            # активный уровень
-    assert "пока не настроен" in body          # маг/асп заглушки
+    # все три уровня настроены и доступны в селекторе
+    assert "Базовое высшее" in body
+    assert "Магистратура" in body
+    assert "Аспирантура" in body
 
 
 def test_preview_renders_summary(client, monkeypatch):
@@ -91,10 +93,10 @@ def test_preview_renders_summary(client, monkeypatch):
     assert "upload_test.xlsx" in body           # имя файла проброшено в форму «Применить»
 
 
-def test_preview_rejects_disabled_level(client, monkeypatch):
-    # аспирантура ещё выключена (enabled: false) -> отклоняем
+def test_preview_rejects_unknown_level(client, monkeypatch):
+    # неизвестный (ненастроенный) уровень -> отклоняем
     monkeypatch.setattr(webapp, "_save_upload", lambda f: Path("x.xlsx"))
-    data = {"level": "postgrad", "file": (BytesIO(b"x"), "o.xlsx")}
+    data = {"level": "doctorate", "file": (BytesIO(b"x"), "o.xlsx")}
     r = client.post("/preview", data=data, content_type="multipart/form-data")
     assert r.status_code == 400
     assert "не настроен" in r.get_data(as_text=True)
@@ -112,11 +114,23 @@ def test_apply_refuses_concurrent_run(client):
         webapp._JOB.clear(); webapp._JOB.update(state="idle")
 
 
-def test_export_redirects_to_download(client, monkeypatch):
+def test_export_async_then_download(client, monkeypatch):
+    import time
     def fake_export(cfg, out, client=None, level="bachelor"):
         Path(out).write_text("x")
         return Path(out)
     monkeypatch.setattr(webapp, "export_deals", fake_export)
+    # /export отвечает сразу страницей-ожидания (не виснет на долгой выгрузке)
     r = client.get("/export")
-    assert r.status_code == 302
-    assert "/download/deals_export_" in r.headers["Location"]
+    assert r.status_code == 200
+    assert "Готовим выгрузку" in r.get_data(as_text=True)
+    # фоновая задача завершается → статус «Готово» со ссылкой на скачивание
+    for _ in range(20):
+        time.sleep(0.1)
+        s = client.get("/export-status")
+        body = s.get_data(as_text=True)
+        if "Скачать" in body:
+            assert "/download/deals_export_" in body
+            break
+    else:
+        assert False, "выгрузка не завершилась"

@@ -17,6 +17,7 @@ parse_applications() группирует по «Уникальному коду
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -48,10 +49,28 @@ COLUMNS = {
     "app_date": "Дата подачи заявления",
     "features": "Особенности приема",
     "control": "Контроль пройден",
+    # только у аспирантуры (в выгрузках бакалавриата/магистратуры колонки нет → пусто)
+    "direction": "КонкурснаяГруппаУГСНаправлениеПодготовкиНаименование",
 }
 
 # Атрибуты заявления (на сделку) и их нормализаторы.
 _CHECKMARKS = ("no_exams", "targeted", "consent", "special", "control")
+
+
+# Шифр перед названием УГС: «1.2 …», «2.3. …» — в справочнике Битрикса его нет.
+_UGS_PREFIX_RE = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
+
+
+def _ugs(value: Any) -> Optional[str]:
+    """«1.2 Компьютерные науки и информатика» -> «Компьютерные науки и информатика».
+
+    В выгрузке аспирантуры УГС идёт с числовым шифром, а в готовом справочнике
+    Битрикса («Укрупнённая группа специальностей») значения без шифра.
+    """
+    text = clean_str(value)
+    if text is None:
+        return None
+    return _UGS_PREFIX_RE.sub("", text) or None
 
 
 def _score(app: Dict[str, Any]) -> float:
@@ -127,6 +146,7 @@ def parse_applications(
             "app_date": clean_str(row.get(cols["app_date"])),
             "features": clean_str(row.get(cols["features"])),
             "control": normalize_checkmark(row.get(cols["control"])),
+            "direction": _ugs(row.get(cols["direction"])),  # УГС (аспирантура), без шифра
         }
         # ключ заявления = группа + основание + особенности + особое право
         key = (app["group"] or "", app["basis"] or "", app["features"] or "", app["special"] or "")

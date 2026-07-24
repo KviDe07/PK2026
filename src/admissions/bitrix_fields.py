@@ -56,9 +56,27 @@ DEAL_FIELDS_MASTER: List[Dict[str, Any]] = [
     {"xml": "M_UPDATED",  "name": "UF_CRM_M_UPDATED",  "type": "string",  "label": "М: Обновлено"},
 ]
 
+# Аспирантура: своя выгрузка 1С (14 колонок). Нет БВИ/Целевик/особое право/контроль.
+# «Укрупнённая группа специальностей» и «Специальность» — ГОТОВЫЕ enum-поля портала
+# (свои не заводим): УГС заполняет sync из выгрузки (levels.postgrad.ready_fields),
+# «Специальность» выбирает оператор — sync её не трогает.
+DEAL_FIELDS_POSTGRAD: List[Dict[str, Any]] = [
+    {"xml": "A_CODE",      "name": "UF_CRM_A_CODE",      "type": "string",  "label": "А: Уникальный код", "filter": True},
+    {"xml": "A_GROUP",     "name": "UF_CRM_A_GROUP",     "type": "string",  "label": "А: Конкурсная группа", "filter": True},
+    {"xml": "A_SCORE",     "name": "UF_CRM_A_SCORE",     "type": "double",  "label": "А: Сумма баллов", "filter": True},
+    {"xml": "A_PRIORITY",  "name": "UF_CRM_A_PRIORITY",  "type": "integer", "label": "А: Приоритет", "filter": True},
+    {"xml": "A_SCORE_ID",  "name": "UF_CRM_A_SCORE_ID",  "type": "double",  "label": "А: Сумма баллов по ИД (все)", "filter": True},
+    {"xml": "A_BASIS",     "name": "UF_CRM_A_BASIS",     "type": "string",  "label": "А: Основание поступления", "filter": True},
+    {"xml": "A_CONSENT",   "name": "UF_CRM_A_CONSENT",   "type": "string",  "label": "А: Согласие на зачисление", "filter": True},
+    {"xml": "A_FEATURES",  "name": "UF_CRM_A_FEATURES",  "type": "string",  "label": "А: Особенности приема", "filter": True},
+    {"xml": "A_APP_DATE",  "name": "UF_CRM_A_APP_DATE",  "type": "string",  "label": "А: Дата подачи заявления"},
+    {"xml": "A_UPDATED",   "name": "UF_CRM_A_UPDATED",   "type": "string",  "label": "А: Обновлено"},
+]
+
 DEAL_FIELDS_BY_LEVEL: Dict[str, List[Dict[str, Any]]] = {
     "bachelor": DEAL_FIELDS_BACHELOR,
     "master": DEAL_FIELDS_MASTER,
+    "postgrad": DEAL_FIELDS_POSTGRAD,
 }
 
 # Обратная совместимость: некоторые модули импортируют DESIRED_DEAL_FIELDS.
@@ -79,6 +97,13 @@ def index_by_xml(client: BitrixClient, entity: str) -> Dict[str, Dict[str, Any]]
     """Все пользовательские поля сущности, индекс по XML_ID (полные строки)."""
     rows = _userfield_list(client, entity)
     return {r.get("XML_ID"): r for r in rows if r.get("XML_ID")}
+
+
+def index_by_name(client: BitrixClient, entity: str) -> Dict[str, Dict[str, Any]]:
+    """Все поля сущности по FIELD_NAME — включая ГОТОВЫЕ поля портала без XML_ID
+    (их коды задаются в settings.yaml, напр. levels.postgrad.ready_fields)."""
+    rows = _userfield_list(client, entity)
+    return {r["FIELD_NAME"]: r for r in rows if r.get("FIELD_NAME")}
 
 
 def _desired_for(entity: str, level: str = "bachelor") -> List[Dict[str, Any]]:

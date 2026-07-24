@@ -346,18 +346,76 @@ def status():
     return redirect(url_for("index"))
 
 
-# ── выгрузка из Битрикса ──────────────────────────────────────────────────────
+# ── выгрузка из Битрикса (асинхронно: тянет комментарии, это долго → не вешаем запрос) ─
+
+EXPORT_RUNNING = """
+<div class=card>
+  <h2 style=margin-top:0>Готовим выгрузку сделок…</h2>
+  <p>Собираем сделки, контакты и комментарии из Битрикса — это может занять пару минут.
+     Страница обновится сама.</p>
+  <p class=muted>Уровень: <b>{{ title }}</b>. Не запускай повторно — выгрузка уже идёт.</p>
+</div>
+<meta http-equiv="refresh" content="5; url={{ url_for('export_status') }}">
+"""
+
+EXPORT_BUSY = """
+<div class=card>
+  <p><b>⏳ Выгрузка уже готовится.</b> Дождись завершения — повторный запуск заблокирован.</p>
+  <a class="btn btn-ghost" href="{{ url_for('export_status') }}">Показать статус</a>
+</div>
+"""
+
+EXPORT_DONE = """
+<p><a href="{{ url_for('index') }}">← на главную</a></p>
+<div class=flash flash-ok><b>Готово.</b> Выгрузка сделок ({{ title }}) собрана.</div>
+<div class=card>
+  <a class="btn btn-primary" href="{{ url_for('download', name=name) }}">Скачать Excel</a>
+  <a class="btn btn-ghost" href="{{ url_for('index') }}">На главную</a>
+</div>
+"""
+
+_EXPORT_JOB = {"state": "idle"}       # idle | running | done | error
+_EXPORT_LOCK = threading.Lock()
+
+
+def _run_export_job(level, title):
+    """Фоновая задача: собрать выгрузку сделок и сохранить результат в _EXPORT_JOB."""
+    try:
+        out = _CFG.output_dir / f"deals_export_{level}_{timestamp_slug()}.xlsx"
+        export_deals(_CFG, out, level=level)
+        with _EXPORT_LOCK:
+            _EXPORT_JOB.update(state="done", name=out.name, title=title, error=None)
+    except Exception as err:  # noqa: BLE001
+        log.exception("Фоновая выгрузка упала")
+        with _EXPORT_LOCK:
+            _EXPORT_JOB.update(state="error", error=str(err))
+
 
 @app.get("/export")
 def export():
     level = request.args.get("level", "bachelor")
-    _check_level(level)
-    try:
-        out = _CFG.output_dir / f"deals_export_{level}_{timestamp_slug()}.xlsx"
-        export_deals(_CFG, out, level=level)
-    except Exception as err:  # noqa: BLE001
-        return render("Ошибка", ERROR, msg=str(err), url_for=url_for), 500
-    return redirect(url_for("download", name=out.name))
+    lv = _check_level(level)
+    with _EXPORT_LOCK:
+        if _EXPORT_JOB.get("state") == "running":
+            return render("Уже готовится", EXPORT_BUSY, url_for=url_for), 409
+        _EXPORT_JOB.clear()
+        _EXPORT_JOB.update(state="running", title=lv["title"])
+    threading.Thread(target=_run_export_job, args=(level, lv["title"]), daemon=True).start()
+    return render("Готовим выгрузку", EXPORT_RUNNING, title=lv["title"], url_for=url_for)
+
+
+@app.get("/export-status")
+def export_status():
+    with _EXPORT_LOCK:
+        st = dict(_EXPORT_JOB)
+    state = st.get("state")
+    if state == "running":
+        return render("Готовим выгрузку", EXPORT_RUNNING, title=st.get("title", ""), url_for=url_for)
+    if state == "error":
+        return render("Ошибка", ERROR, msg=st.get("error", "неизвестно"), url_for=url_for), 500
+    if state == "done":
+        return render("Готово", EXPORT_DONE, name=st["name"], title=st.get("title", ""), url_for=url_for)
+    return redirect(url_for("index"))
 
 
 @app.get("/download/<path:name>")

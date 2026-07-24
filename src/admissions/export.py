@@ -22,14 +22,36 @@ log = logging.getLogger("admissions")
 
 _BB = re.compile(r"\[/?[^\]]+\]")  # грубая чистка BBCode ([p], [b], [URL=...], ...)
 
-# Колонки данных сделки: (XML_ID поля, заголовок)
-_DEAL_COLS = [
-    ("B_GROUP", "Конкурсная группа"), ("B_SCORE", "Сумма баллов"),
-    ("B_PRIORITY", "Приоритет"), ("B_SCORE_ID", "Сумма баллов по ИД"),
-    ("B_CONSENT", "Согласие"), ("B_BVI", "Без ВИ"), ("B_BASIS", "Основание"),
-    ("B_TARGETED", "Целевик"), ("B_SPECIAL", "Особое право"),
-    ("B_APP_DATE", "Дата подачи"), ("B_CONTROL", "Контроль"),
+# Колонки данных сделки в выгрузке, по уровню. Ключ — XML_ID нашего поля (B_/M_/A_)
+# ИЛИ прямой код готового поля портала (UF_CRM_…). enum-поля (Кафедра/УГС/Специальность)
+# резолвятся из ID в текст. Готовые поля есть на портале, но без XML_ID.
+_INTERVIEW_COLS = [
+    ("UF_CRM_1752747663", "Группа собеседование"),
+    ("UF_CRM_1752747696", "Комментарий собеседование"),
 ]
+_EXPORT_COLS = {
+    "bachelor": [
+        ("B_GROUP", "Конкурсная группа"), ("B_SCORE", "Сумма баллов"),
+        ("B_PRIORITY", "Приоритет"), ("B_SCORE_ID", "Сумма баллов по ИД"),
+        ("B_CONSENT", "Согласие"), ("B_BVI", "Без ВИ"), ("B_BASIS", "Основание"),
+        ("B_TARGETED", "Целевик"), ("B_SPECIAL", "Особое право"),
+        ("B_APP_DATE", "Дата подачи"), ("B_CONTROL", "Контроль"),
+    ] + _INTERVIEW_COLS,
+    "master": [
+        ("M_GROUP", "Конкурсная группа"), ("M_SCORE", "Сумма баллов"),
+        ("M_PRIORITY", "Приоритет"), ("M_SCORE_ID", "Сумма баллов по ИД"),
+        ("M_CONSENT", "Согласие"), ("M_BASIS", "Основание"), ("M_FEATURES", "Особенности"),
+        ("UF_CRM_1750780247059", "Кафедра"),
+    ] + _INTERVIEW_COLS,
+    "postgrad": [
+        ("A_GROUP", "Конкурсная группа"), ("A_SCORE", "Сумма баллов"),
+        ("A_PRIORITY", "Приоритет"), ("A_SCORE_ID", "Сумма баллов по ИД"),
+        ("A_CONSENT", "Согласие"), ("A_BASIS", "Основание"), ("A_FEATURES", "Особенности"),
+        ("A_APP_DATE", "Дата подачи"),
+        ("UF_CRM_1750624562799", "Укрупнённая группа специальностей"),
+        ("UF_CRM_1750624913519", "Специальность"),
+    ] + _INTERVIEW_COLS,
+}
 
 
 def _clean(text: Any) -> str:
@@ -88,6 +110,20 @@ def export_deals(cfg, path: str | Path, client=None, level: str = "bachelor") ->
     cidx = index_by_xml(client, "contact")
     ccode = cidx["PK_CODE"]["FIELD_NAME"]
 
+    # колонки данных по уровню → (FIELD_NAME, заголовок, enum_map|None).
+    # Ключ-XML_ID (B_/M_/A_) резолвим через dcode; прямой код готового поля берём как есть.
+    # enum-поля (Кафедра/УГС/Специальность) резолвим из ID в текст по crm.deal.fields.
+    meta = client._call("crm.deal.fields", {}).get("result", {}) or {}
+    export_cols = []
+    for key, title in _EXPORT_COLS.get(level, _EXPORT_COLS["bachelor"]):
+        fname = dcode.get(key, key)
+        m = meta.get(fname) or {}
+        emap = ({str(it["ID"]): it["VALUE"] for it in (m.get("items") or [])}
+                if m.get("type") == "enumeration" else None)
+        export_cols.append((fname, title, emap))
+    known = set(dcode.values())
+    extra_fields = [fn for fn, _, _ in export_cols if fn not in known]
+
     stages = client._call("crm.status.list",
                           {"filter": {"ENTITY_ID": f"DEAL_STAGE_{cat}" if cat else "DEAL_STAGE"}}
                           ).get("result", []) or []
@@ -96,7 +132,8 @@ def export_deals(cfg, path: str | Path, client=None, level: str = "bachelor") ->
     type_label = {s["STATUS_ID"]: s["NAME"] for s in ctypes}  # CLIENT -> «Абитуриенты»
 
     deals = client.list_all("crm.deal.list", filter={"CATEGORY_ID": cat},
-                            select=["ID", "TITLE", "STAGE_ID", "CONTACT_ID"] + list(dcode.values()))
+                            select=["ID", "TITLE", "STAGE_ID", "CONTACT_ID"]
+                                   + list(dcode.values()) + extra_fields)
 
     cids = sorted({str(d["CONTACT_ID"]) for d in deals
                    if d.get("CONTACT_ID") and str(d["CONTACT_ID"]) != "0"})
@@ -117,7 +154,7 @@ def export_deals(cfg, path: str | Path, client=None, level: str = "bachelor") ->
     ws = wb.active
     ws.title = "Сделки"
     headers = (["ID сделки", "Стадия", "ФИО", "Телефон", "Почта", "Уникальный код", "Тип"]
-               + [h for _, h in _DEAL_COLS]
+               + [t for _, t, _ in export_cols]
                + ["Комментарии контакта", "Комментарии сделки"])
     ws.append(headers)
     for cell in ws[1]:
@@ -132,13 +169,17 @@ def export_deals(cfg, path: str | Path, client=None, level: str = "bachelor") ->
             extract_value(c.get("PHONE")), extract_value(c.get("EMAIL")),
             c.get(ccode), type_label.get(c.get("TYPE_ID"), c.get("TYPE_ID")),
         ]
-        row += [d.get(dcode[xml]) if xml in dcode else "" for xml, _ in _DEAL_COLS]
+        for fname, _, emap in export_cols:
+            val = d.get(fname)
+            if emap and val not in (None, ""):
+                val = emap.get(str(val), val)   # enum: ID → текст
+            row.append(val)
         row += [_format(c_comments.get(cid, []), users),
                 _format(d_comments.get(str(d["ID"]), []), users)]
         ws.append(row)
 
     # ширины + перенос для колонок комментариев
-    widths = [10, 22, 28, 16, 26, 14, 12] + [16] * len(_DEAL_COLS) + [50, 50]
+    widths = [10, 22, 28, 16, 26, 14, 12] + [16] * len(export_cols) + [50, 50]
     for idx, w in enumerate(widths, 1):
         ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
     last = len(headers)

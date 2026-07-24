@@ -42,7 +42,29 @@ _DEAL_UF = [
         {"xml": "M_CONSENT", "name": "UF_CRM_M_CONSENT"},
         {"xml": "M_FEATURES", "name": "UF_CRM_M_FEATURES"},
         {"xml": "M_UPDATED", "name": "UF_CRM_M_UPDATED"},
+        # аспирантура «А:» (нет БВИ/Целевик/особое право/контроль; УГС — готовое поле)
+        {"xml": "A_CODE", "name": "UF_CRM_A_CODE"},
+        {"xml": "A_GROUP", "name": "UF_CRM_A_GROUP"},
+        {"xml": "A_SCORE", "name": "UF_CRM_A_SCORE"},
+        {"xml": "A_PRIORITY", "name": "UF_CRM_A_PRIORITY"},
+        {"xml": "A_SCORE_ID", "name": "UF_CRM_A_SCORE_ID"},
+        {"xml": "A_BASIS", "name": "UF_CRM_A_BASIS"},
+        {"xml": "A_CONSENT", "name": "UF_CRM_A_CONSENT"},
+        {"xml": "A_FEATURES", "name": "UF_CRM_A_FEATURES"},
+        {"xml": "A_APP_DATE", "name": "UF_CRM_A_APP_DATE"},
+        {"xml": "A_UPDATED", "name": "UF_CRM_A_UPDATED"},
     ]
+] + [
+    # ГОТОВОЕ поле портала (заведено админом, без XML_ID): «Укрупнённая группа
+    # специальностей» — enum-справочник, sync пишет в него по коду из ready_fields.
+    {"XML_ID": None, "FIELD_NAME": "UF_CRM_1750624562799", "USER_TYPE_ID": "enumeration",
+     "LIST": [
+         {"ID": "44", "VALUE": "Математика и механика"},
+         {"ID": "46", "VALUE": "Компьютерные науки и информатика"},
+         {"ID": "48", "VALUE": "Информационные технологии и телекоммуникации"},
+         {"ID": "50", "VALUE": "Машиностроение"},
+         {"ID": "52", "VALUE": "Науки о Земле и окружающей среде"},
+     ]},
 ]
 _CONTACT_UF = [
     {"XML_ID": "PK_CODE", "FIELD_NAME": "UF_CRM_PK_CODE"},
@@ -52,6 +74,21 @@ _CONTACT_TYPES = [
     {"STATUS_ID": "SUPPLIER", "NAME": "Магистры"},
     {"STATUS_ID": "PARTNER", "NAME": "Аспиранты"},
 ]
+
+# crm.deal.fields — подписи и справочники (для export: enum ID → текст).
+_DEAL_FIELDS_META = {
+    "UF_CRM_1750624562799": {"type": "enumeration", "items": [
+        {"ID": "44", "VALUE": "Математика и механика"},
+        {"ID": "46", "VALUE": "Компьютерные науки и информатика"},
+        {"ID": "48", "VALUE": "Информационные технологии и телекоммуникации"},
+        {"ID": "50", "VALUE": "Машиностроение"},
+        {"ID": "52", "VALUE": "Науки о Земле и окружающей среде"},
+    ]},
+    "UF_CRM_1750780247059": {"type": "enumeration", "items": []},   # Кафедра
+    "UF_CRM_1750624913519": {"type": "enumeration", "items": []},   # Специальность
+    "UF_CRM_1752747663": {"type": "string"},   # Группа собеседование
+    "UF_CRM_1752747696": {"type": "string"},   # Комментарий собеседование
+}
 
 
 class FakeBitrixClient:
@@ -95,6 +132,8 @@ class FakeBitrixClient:
             if params.get("filter", {}).get("ENTITY_ID") == "CONTACT_TYPE":
                 return {"result": _CONTACT_TYPES}
             return {"result": self.stages}
+        if method == "crm.deal.fields":
+            return {"result": _DEAL_FIELDS_META}
         raise AssertionError(f"_call неожиданно вызван: {method} {params}")
 
     # ── запись ──────────────────────────────────────────────────────────────

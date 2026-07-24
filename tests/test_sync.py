@@ -339,6 +339,29 @@ def test_master_uses_own_funnel_fields_and_type(cfg, fake_bitrix, patch_people):
     assert "UF_CRM_M_DEPT" not in deal                        # «Кафедра» операторская — sync не заполняет
 
 
+def test_postgrad_funnel_type_and_ready_ugs_field(cfg, fake_bitrix, patch_people):
+    # аспирантура: своя воронка/поля «А:», тип контакта PARTNER, УГС — в ГОТОВОЕ поле портала
+    app = _app("ФАКТ Математика и механика", score=85.0)
+    app["direction"] = "Математика и механика"    # УГС уже без шифра (срезал парсер)
+    patch_people([_person("701", "Иванов Иван Иванович", app)])
+    client = fake_bitrix(stages=[{"STATUS_ID": "C12:NEW", "SORT": "10",
+                                  "NAME": "Поступившие заявления"}])
+    stats = sync_mod.sync(cfg, "x", apply=True, client=client, level="postgrad")
+
+    assert stats["created_contacts"] == 1 and stats["created_deals"] == 1
+    add = client.writes_of("crm.contact.add")[0]["fields"]
+    assert add["TYPE_ID"] == "PARTNER"                     # Аспиранты, не Абитуриенты
+    deal = client.writes_of("crm.deal.add")[0]["fields"]
+    assert deal["CATEGORY_ID"] == 12                       # воронка «Аспирантура 2026»
+    assert deal["STAGE_ID"] == "C12:NEW"
+    assert deal["UF_CRM_A_GROUP"] == "ФАКТ Математика и механика"
+    assert deal["UF_CRM_A_CODE"] == "701"
+    # УГС записан в готовое поле портала как ID справочника (44), а не текстом
+    assert deal["UF_CRM_1750624562799"] == "44"
+    # поля чужих уровней не пишем
+    assert "UF_CRM_B_GROUP" not in deal and "UF_CRM_M_GROUP" not in deal
+
+
 def test_master_key_ignores_special_no_duplicate(cfg, fake_bitrix, patch_people):
     # существующая маг-сделка (у неё нет поля «особое право») matched заявлением -> обновление, НЕ дубль
     contact = {"ID": "501", "LAST_NAME": "Иванов", "NAME": "Иван", "SECOND_NAME": "Иванович",

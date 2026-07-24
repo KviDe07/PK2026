@@ -34,6 +34,7 @@ from .bitrix_fields import (
     DEAL_FIELDS_BY_LEVEL,
     DESIRED_CONTACT_FIELDS,
     enum_value_map,
+    index_by_name,
     index_by_xml,
 )
 from .normalize import clean_str, name_key, normalize_phone
@@ -41,8 +42,9 @@ from .utils import now_iso
 
 log = logging.getLogger("admissions")
 
-# Префикс XML_ID полей сделки по уровню (бакалавриат «B», магистратура «M»).
-LEVEL_PREFIX = {"bachelor": "B", "master": "M"}
+# Префикс XML_ID полей сделки по уровню (бакалавриат «B», магистратура «M»,
+# аспирантура «A»).
+LEVEL_PREFIX = {"bachelor": "B", "master": "M", "postgrad": "A"}
 
 # Атрибут заявления (1С) -> XML_ID поля сделки, по уровню. У магистратуры нет
 # БВИ/Целевик/особое право/контроль (эти колонки убраны из выгрузки), «Кафедра» —
@@ -58,6 +60,14 @@ APP_TO_XML_BY_LEVEL = {
         "group": "M_GROUP", "score": "M_SCORE", "priority": "M_PRIORITY",
         "score_id": "M_SCORE_ID", "basis": "M_BASIS", "consent": "M_CONSENT",
         "features": "M_FEATURES",
+    },
+    # аспирантура: нет БВИ/Целевик/особое право/контроль. «Укрупнённая группа
+    # специальностей» — готовое поле портала, заполняется через ready_fields
+    # (см. settings.yaml levels.postgrad), «Специальность» — операторская.
+    "postgrad": {
+        "group": "A_GROUP", "score": "A_SCORE", "priority": "A_PRIORITY",
+        "score_id": "A_SCORE_ID", "basis": "A_BASIS", "consent": "A_CONSENT",
+        "features": "A_FEATURES", "app_date": "A_APP_DATE",
     },
 }
 
@@ -149,8 +159,12 @@ def _require_fields(idx: Dict[str, Any], desired, entity: str) -> None:
 
 def _desired_deal(app: Dict[str, Any], code: str, dcode: Dict[str, str], now: str,
                   enum_maps: Dict[str, Dict[str, str]], app_to_xml: Dict[str, str],
-                  code_xml: str, updated_xml: str) -> Dict[str, Any]:
+                  code_xml: str, updated_xml: str,
+                  ready_fields: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     desired = {dcode[xml]: app.get(key) for key, xml in app_to_xml.items()}
+    # готовые поля портала (без XML_ID) — коды берём из settings.yaml (ready_fields)
+    for attr, field_name in (ready_fields or {}).items():
+        desired[field_name] = app.get(attr)
     desired[dcode[code_xml]] = code
     desired[dcode[updated_xml]] = now
     for field_code, vmap in enum_maps.items():
@@ -220,6 +234,23 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
         for row in deal_idx.values()
         if row.get("USER_TYPE_ID") == "enumeration"
     }
+
+    # Готовые поля портала (заведены админом, без XML_ID) — коды в settings.yaml:
+    # levels.<уровень>.ready_fields = {атрибут заявления: UF_CRM_…}. Пример: у аспирантуры
+    # «Укрупнённая группа специальностей» (enum) заполняется из колонки УГС выгрузки 1С.
+    ready_fields: Dict[str, str] = dict(cfg.level_conf(level).get("ready_fields") or {})
+    if ready_fields:
+        by_name = index_by_name(client, "deal")
+        missing = [f for f in ready_fields.values() if f not in by_name]
+        if missing:
+            raise RuntimeError(
+                f"В Битриксе нет готовых полей сделки: {', '.join(missing)}. "
+                f"Проверьте levels.{level}.ready_fields в settings.yaml."
+            )
+        for field_name in ready_fields.values():
+            row = by_name[field_name]
+            if row.get("USER_TYPE_ID") == "enumeration":
+                deal_enum_maps[field_name] = enum_value_map(row)
     code_field = contact_idx["PK_CODE"]["FIELD_NAME"]
     contact_type_id = cfg.contact_type_id_for(level)  # «Тип контакта»: CLIENT=Абитуриенты, SUPPLIER=Магистры
     code_xml = f"{prefix}_CODE"
@@ -242,10 +273,12 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
     export_codes = {a.code for a in applicants}
 
     # ── сделки воронки: по группам + пустые (реюз), множество контактов воронки ─
+    # готовые поля тоже читаем — иначе sync считал бы их пустыми и переписывал каждый раз
     deals = client.list_all(
         "crm.deal.list",
         filter={"CATEGORY_ID": category_id},
-        select=["ID", "TITLE", "CONTACT_ID", "STAGE_ID"] + list(dcode.values()),
+        select=(["ID", "TITLE", "CONTACT_ID", "STAGE_ID"]
+                + list(dcode.values()) + list(ready_fields.values())),
     )
     deals_group: Dict[str, Dict[tuple, Dict[str, Any]]] = defaultdict(dict)
     deals_blank: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -452,7 +485,7 @@ def sync(cfg, apps_path: str | Path, apply: bool = False, client=None,
             key = dkey(app.get("group"), app.get("basis"), app.get("features"),
                        app.get("special") if special_field else "")
             desired = _desired_deal(app, a.code, dcode, now, deal_enum_maps,
-                                    app_to_xml, code_xml, updated_xml)
+                                    app_to_xml, code_xml, updated_xml, ready_fields)
             found = grp.get(key)
             if found:  # сделка для этого заявления уже есть → обновить изменения
                 changed = _deal_changes(found, desired, dcode[updated_xml])

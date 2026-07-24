@@ -69,6 +69,19 @@ def test_dedup_by_code_and_group(tmp_path):
     assert a["applications"][0]["priority"] == 2
 
 
+def test_ugs_strips_numeric_code():
+    """УГС аспирантуры: в выгрузке с шифром, в справочнике Битрикса — без него."""
+    from admissions.ingest_applications import _ugs
+
+    assert _ugs("1.2 Компьютерные науки и информатика") == "Компьютерные науки и информатика"
+    assert _ugs("2.3. Информационные технологии и телекоммуникации") == \
+        "Информационные технологии и телекоммуникации"
+    assert _ugs("1.1. Математика и механика") == "Математика и механика"
+    assert _ugs("2.5. Машиностроение") == "Машиностроение"
+    assert _ugs("Науки о Земле и окружающей среде") == "Науки о Земле и окружающей среде"
+    assert _ugs(None) is None
+
+
 def test_same_group_different_basis_kept(tmp_path):
     # одна группа, но разные основания -> ДВА заявления (не склеивать)
     f = tmp_path / "f.xlsx"
